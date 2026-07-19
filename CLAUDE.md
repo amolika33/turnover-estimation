@@ -146,10 +146,30 @@ is deliberately re-sequenced to prove out the ML core first, using only the
    With only ~400 rows, use careful CV (e.g. repeated k-fold) and watch fold
    variance.
 3. Once adjacent-company data (~23k rows) is available: extend
-   `mission_segmentation.py` to merge it in, assign adjacent companies to
-   missions via an external SIC/industry mapping (they won't have
-   `Value Stream`), and set adjacent rows to a lower `sample_weight` than
-   space companies so the model trusts them less.
+   `mission_segmentation.py` to merge it in, and set adjacent rows to a
+   lower `sample_weight` than space companies so the model trusts them
+   less (`ADJACENT_SAMPLE_WEIGHT` placeholder already in `model_bakeoff.py`,
+   unused — see "Documented assumptions and thresholds"). See
+   `ADJACENT_DATA_REQUIREMENTS.md` for the format the incoming files need
+   to be in.
+   **Mission assignment is simpler than earlier assumed**: adjacent
+   companies arrive as three separate mission-specific exports (one per
+   mission), pre-tagged or filename-tagged — *not* requiring the
+   buzzword/SIC-based inference originally planned for them (that
+   inference logic is now scoped to cross-cutting companies only, at
+   prediction time — see "Planned: cross-cutting predictions" below).
+   **Not optional, must change when this happens**: `model_bakeoff.py`'s
+   outer `GroupKFold` (`make_repeated_group_kfold_splits`) currently
+   groups every row in the mission dataset by `company_id` with no
+   awareness of `population_type`. Per the methodology's explicit
+   requirement (already stated above under "Adjacent-company datasets"),
+   once adjacent rows are merged into training, the **outer** test folds
+   used for final performance reporting must be restricted to space
+   companies only — adjacent rows can appear in outer *training* folds
+   (that's their entire purpose) but never in the outer *test* fold. The
+   inner CV (hyperparameter tuning) can stay pooled. This needs an actual
+   code change to the outer-split construction, not just a data filter
+   applied afterward.
 
 Validate each stage against a small toy sample before moving to the next.
 
@@ -163,9 +183,11 @@ pipeline works end-to-end:
 
 - At **prediction time only** (never for training), assign each cross-cutting
   company a best-guess mission via buzzword/keyword similarity to the three
-  mission categories — reusing the same buzzword-based logic planned for
-  adjacent-company mission assignment (adjacent companies won't have `Value
-  Stream` either, so this logic is shared).
+  mission categories. **Correction**: this is no longer shared with
+  adjacent-company mission assignment — adjacent companies turn out to
+  arrive as three separate pre-tagged/filename-tagged mission exports (see
+  `ADJACENT_DATA_REQUIREMENTS.md`), not needing inference. This
+  buzzword-similarity logic is cross-cutting-only.
 - Score the company with whichever mission model that best-guess assignment
   points to.
 - Mark these predictions clearly as **"approximate"** in the reliability/

@@ -4,7 +4,21 @@ features (grants, funding, accelerators — Source 1 only, not merged yet) are
 deferred to a later pass. Nothing here may be derived from `total_turnover`:
 that population's inference companies have no turnover history at all, so a
 turnover-derived feature would be unusable for exactly the rows that need
-predicting, and it would leak the target besides."""
+predicting, and it would leak the target besides.
+
+TODO (adjacent-company integration, not yet built — see
+ADJACENT_DATA_REQUIREMENTS.md): add `population_type` (already stamped
+"space" on every panel row by sample_construction.build_long_panel, ready
+to take "adjacent" once that data is merged in) as a categorical feature
+here, alongside `sic_code_1`/`linkedin_industry`/`value_stream`. The point
+isn't just carrying the label through — it's letting the model *learn* a
+systematic space-vs-adjacent adjustment (a coefficient/split on
+population_type) rather than population_type only ever acting through
+`sample_weight` (ADJACENT_SAMPLE_WEIGHT in model_bakeoff.py). Weighting
+alone can down-rank adjacent rows' influence on the fit; it can't let the
+model represent "adjacent companies of this profile tend to report
+turnover differently than space companies of this profile," which a
+feature can."""
 from pathlib import Path
 
 import numpy as np

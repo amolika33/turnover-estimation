@@ -76,6 +76,18 @@ TARGET_COL = "total_turnover"
 GROUP_COL = COMPANY_ID_COL
 WEIGHT_COL = "sample_weight"
 
+# NOT YET WIRED UP — no adjacent data exists to test against (see
+# ADJACENT_DATA_REQUIREMENTS.md and CLAUDE.md "Current status / build
+# order" step 3). Once adjacent rows are merged in, this should scale
+# their sample_weight down relative to space companies' inverse-frequency
+# weight (sample_construction.build_long_panel), so the model trusts
+# adjacent-company labels less. The value itself is a placeholder — to be
+# tuned empirically once adjacent data exists, by comparing candidate
+# weights (e.g. 0.2/0.5/1.0) against held-out SPACE-COMPANY-ONLY
+# validation performance, not pooled space+adjacent performance (see the
+# outer-CV note in CLAUDE.md's "Documented assumptions and thresholds").
+ADJACENT_SAMPLE_WEIGHT = 0.5
+
 LOG_NUMERIC_FEATURES = [
     "total_employees",
     "balance_sheet_total_assets",
