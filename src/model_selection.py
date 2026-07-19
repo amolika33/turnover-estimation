@@ -16,8 +16,15 @@ a summary table by hand:
    accuracy and fold-to-fold consistency equal weight without hand-picking
    a blend, and keeps the "no single metric decides" rule from the
    checklist — now applied across 6 metrics instead of 3.
-3. Interpretability tie-break: among survivors within 1.0 composite-rank
-   points of the best score ("comparable"), pick the one with the lowest
+3. Interpretability tie-break: composite rank alone is too loose to mean
+   "genuine tie" — it blends 6 ranked metrics, so two models can be within
+   1.0 composite-rank points while one has decisively better R2 (e.g.
+   Resilient Earth: Extra Trees R2=0.59 vs Elastic Net R2=-0.09 were only
+   0.66 composite-rank points apart). A model only enters the "comparable"
+   set, and is eligible for the simplicity tie-break, if BOTH its composite
+   rank is within COMPARABLE_TOLERANCE of the top-ranked survivor AND its
+   R2_mean is within R2_COMPARABLE_TOLERANCE (0.05) of the top-ranked
+   survivor's R2_mean. Among that comparable set, pick the lowest
    SIMPLICITY_RANK (plain Linear Regression simplest; Ridge/Lasso/Elastic
    Net next; k-NN; SVR; tree ensembles least interpretable).
 """
@@ -55,6 +62,7 @@ ACCURACY_METRICS = [("MAE_mean", True), ("RMSE_mean", True), ("R2_mean", False)]
 CONSISTENCY_METRICS = [("MAE_std", True), ("RMSE_std", True), ("R2_std", True)]
 RANK_METRICS = ACCURACY_METRICS + CONSISTENCY_METRICS
 COMPARABLE_TOLERANCE = 1.0
+R2_COMPARABLE_TOLERANCE = 0.05
 BROKEN_FOLD_R2 = -2.0
 BLOWUP_FOLD_MAE_MULTIPLE = 3.0
 
@@ -101,19 +109,20 @@ def rank_models(summary: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def select_model(summary: pd.DataFrame, fold_detail: pd.DataFrame) -> dict:
-    robustness = compute_robustness(fold_detail)
-    ranked = rank_models(summary).merge(robustness, on="Model")
-    ranked["simplicity_rank"] = ranked["Model"].map(SIMPLICITY_RANK)
-    ranked = ranked.sort_values("composite_rank").reset_index(drop=True)
-
+def pick_winner(ranked: pd.DataFrame) -> dict:
+    """Expects `ranked` to already carry composite_rank, robustness_violation,
+    R2_mean, and simplicity_rank (from rank_models + compute_robustness)."""
     survivors = ranked[~ranked["robustness_violation"]]
     fallback_used = survivors.empty
     if fallback_used:
         survivors = ranked
 
-    best_rank = survivors["composite_rank"].min()
-    comparable = survivors[survivors["composite_rank"] <= best_rank + COMPARABLE_TOLERANCE]
+    top_row = survivors.sort_values("composite_rank").iloc[0]
+    best_rank = top_row["composite_rank"]
+    comparable = survivors[
+        (survivors["composite_rank"] <= best_rank + COMPARABLE_TOLERANCE)
+        & ((survivors["R2_mean"] - top_row["R2_mean"]).abs() < R2_COMPARABLE_TOLERANCE)
+    ]
     comparable = comparable.sort_values(["simplicity_rank", "composite_rank"])
     winner_row = comparable.iloc[0]
     tie_break_used = len(comparable) > 1
@@ -139,7 +148,17 @@ def select_model(summary: pd.DataFrame, fold_detail: pd.DataFrame) -> dict:
         "runner_up": None if runner_up_row is None else runner_up_row["Model"],
         "beats_runner_up_on": beats_on,
         "winner_row": winner_row,
+        "top_ranked_model": top_row["Model"],
+        "winner_is_top_ranked": winner_row["Model"] == top_row["Model"],
     }
+
+
+def select_model(summary: pd.DataFrame, fold_detail: pd.DataFrame) -> dict:
+    robustness = compute_robustness(fold_detail)
+    ranked = rank_models(summary).merge(robustness, on="Model")
+    ranked["simplicity_rank"] = ranked["Model"].map(SIMPLICITY_RANK)
+    ranked = ranked.sort_values("composite_rank").reset_index(drop=True)
+    return pick_winner(ranked)
 
 
 def fit_final_model(mission_df: pd.DataFrame, model_name: str, n_splits: int = 5):
@@ -199,6 +218,12 @@ def main() -> None:
 
         winner = result["winner"]
         print(f"\nSelected: {winner}")
+        print(f"  Top-ranked by composite_rank alone: {result['top_ranked_model']}")
+        if not result["winner_is_top_ranked"]:
+            print(
+                f"  NOTE: tie-break overrode the raw top-ranked model — {result['top_ranked_model']} "
+                f"had a better composite rank but {winner} was within tolerance and simpler."
+            )
         print(f"  Runner-up: {result['runner_up']}")
         print(f"  Beats runner-up on: {result['beats_runner_up_on']}")
         print(f"  Tie-break (simplicity) invoked: {result['tie_break_used']}")
