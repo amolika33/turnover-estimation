@@ -3,8 +3,15 @@ CLAUDE.md (methodology doc secs 1.7-1.8): all 9 candidate models, grouped CV
 by company ID, per-fold preprocessing pipelines, scaling only for
 scale-sensitive models, hyperparameter search for every model, MAE/RMSE/R2
 for every model. Hyperparameter tuning happens inside the training fold only
-(nested CV: an outer GroupKFold for performance estimation, an inner
+(nested CV: a repeated outer GroupKFold for performance estimation, an inner
 GroupKFold inside GridSearchCV for tuning), never on the full dataset.
+
+Outer CV is repeated grouped k-fold (5 folds x 5 repeats, 25 outer
+train/test splits, a different random_state per repeat) per methodology
+sec 1.8's requirement to repeat the split across multiple subsets rather
+than rely on a single k-fold pass — a single pass is one arbitrary
+partition of a ~80-200 company dataset, and results (especially the
+robustness fallback on ACE) were sensitive to it.
 
 Every model predicts log1p(total_turnover) via TransformedTargetRegressor,
 fit inside the pipeline per fold (CLAUDE.md's leakage rule already lists
@@ -166,6 +173,23 @@ def build_preprocessor(scale: bool) -> ColumnTransformer:
     )
 
 
+def make_repeated_group_kfold_splits(
+    X: pd.DataFrame, y: pd.Series, groups: pd.Series, n_splits: int, n_repeats: int, random_state: int
+) -> list[tuple[int, int, np.ndarray, np.ndarray]]:
+    """Methodology sec 1.8: repeat the train/validation split across multiple
+    subsets rather than relying on a single k-fold pass, so the outer
+    performance estimate isn't sensitive to one unlucky partition. Each
+    repeat is a full, independent GroupKFold partition (different
+    random_state per repeat) — companies are grouped correctly within every
+    repeat, but which fold a company lands in varies repeat to repeat."""
+    splits = []
+    for repeat in range(n_repeats):
+        cv = GroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state + repeat)
+        for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
+            splits.append((repeat, fold_idx, train_idx, test_idx))
+    return splits
+
+
 def evaluate_model(
     name: str,
     estimator,
@@ -174,12 +198,12 @@ def evaluate_model(
     y: pd.Series,
     groups: pd.Series,
     weights: pd.Series,
-    outer_cv,
+    outer_splits: list[tuple[int, int, np.ndarray, np.ndarray]],
     inner_cv,
 ) -> list[dict]:
     preprocessor = build_preprocessor(scale=name in SCALE_SENSITIVE)
     fold_rows = []
-    for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X, y, groups)):
+    for repeat, fold_idx, train_idx, test_idx in outer_splits:
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
         w_train, w_test = weights.iloc[train_idx], weights.iloc[test_idx]
@@ -205,6 +229,7 @@ def evaluate_model(
         fold_rows.append(
             {
                 "Model": name,
+                "repeat": repeat,
                 "fold": fold_idx,
                 "n_train_companies": groups_train.nunique(),
                 "n_test_companies": groups.iloc[test_idx].nunique(),
@@ -218,20 +243,24 @@ def evaluate_model(
     return fold_rows
 
 
-def run_bakeoff(mission_df: pd.DataFrame, n_outer_splits: int = 5, n_inner_splits: int = 3) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_bakeoff(
+    mission_df: pd.DataFrame, n_outer_splits: int = 5, n_outer_repeats: int = 5, n_inner_splits: int = 3
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = cast_categoricals(mission_df)
     X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
     y = df[TARGET_COL]
     groups = df[GROUP_COL]
     weights = df[WEIGHT_COL]
 
-    outer_cv = GroupKFold(n_splits=n_outer_splits, shuffle=True, random_state=RANDOM_STATE)
+    outer_splits = make_repeated_group_kfold_splits(
+        X, y, groups, n_splits=n_outer_splits, n_repeats=n_outer_repeats, random_state=RANDOM_STATE
+    )
     inner_cv = GroupKFold(n_splits=n_inner_splits, shuffle=True, random_state=RANDOM_STATE)
 
     all_folds = []
     for name, (estimator, param_grid) in MODELS.items():
         all_folds.extend(
-            evaluate_model(name, estimator, param_grid, X, y, groups, weights, outer_cv, inner_cv)
+            evaluate_model(name, estimator, param_grid, X, y, groups, weights, outer_splits, inner_cv)
         )
     fold_detail = pd.DataFrame(all_folds)
 
