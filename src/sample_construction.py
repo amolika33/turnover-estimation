@@ -51,7 +51,19 @@ def build_long_panel(labelled_df: pd.DataFrame) -> pd.DataFrame:
         year_frames.append(year_df)
     if not year_frames:
         return pd.DataFrame(columns=ID_COLS + ["year", "total_turnover"])
-    return pd.concat(year_frames, ignore_index=True)
+    panel = pd.concat(year_frames, ignore_index=True)
+
+    panel["total_employees"] = panel["total_employees_ch"].where(
+        panel["total_employees_ch"].notna(), panel["total_employees_est"]
+    )
+    panel["employee_count_source"] = pd.NA
+    panel.loc[panel["total_employees_ch"].notna(), "employee_count_source"] = "filed"
+    panel.loc[
+        panel["total_employees_ch"].isna() & panel["total_employees_est"].notna(),
+        "employee_count_source",
+    ] = "estimated"
+
+    return panel
 
 
 def construct_samples(segmented_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
