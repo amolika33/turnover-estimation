@@ -27,8 +27,25 @@ a summary table by hand:
    survivor's R2_mean. Among that comparable set, pick the lowest
    SIMPLICITY_RANK (plain Linear Regression simplest; Ridge/Lasso/Elastic
    Net next; k-NN; SVR; tree ensembles least interpretable).
+
+Reads the bake-off's saved model_bakeoff_{mission}_summary.csv /
+_folds.csv (written by `python -m src.model_bakeoff`) rather than calling
+run_bakeoff() again. Two reasons: (1) wasted compute — the repeated 5x5
+grouped CV bake-off takes minutes per mission, and re-running it here to
+get numbers already sitting on disk was pure waste; (2) run-to-run drift —
+GroupKFold's shuffling is seeded, so a second run *should* reproduce the
+same folds, but reading the one bake-off run everyone is looking at
+guarantees model_selection's decision matches the reported bake-off table
+byte-for-byte, rather than trusting that two separate invocations agree.
+
+Writes selected_models.csv (mission, selected_model, r2_mean, usable,
+exclusion_reason, best_params) — the single source of truth predict.py and
+assemble.py read instead of a hardcoded mission-name dict, so ACE's
+exclusion is a reviewable data fact (recorded here, re-evaluated every time
+this module runs), not baked into another module's source code.
 """
 import argparse
+import json
 from pathlib import Path
 
 import joblib
@@ -52,7 +69,6 @@ from src.model_bakeoff import (
     build_preprocessor,
     cast_categoricals,
     get_mission_features,
-    run_bakeoff,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +81,15 @@ COMPARABLE_TOLERANCE = 1.0
 R2_COMPARABLE_TOLERANCE = 0.05
 BROKEN_FOLD_R2 = -2.0
 BLOWUP_FOLD_MAE_MULTIPLE = 3.0
+
+# ASSUMPTION (documented here + CLAUDE.md "Model usability threshold" +
+# the usable/exclusion_reason columns in selected_models.csv): a selected
+# model is only usable for prediction if it beats predicting the mission's
+# own mean turnover, i.e. R2_mean > 0. This is what took ACE out of
+# predict.py (R2_mean=-1.03 under repeated CV) — expressed as a threshold
+# instead of a hardcoded mission name, a future data refresh that lifts
+# ACE's R2 above 0 flips its usability automatically, no code change.
+USABILITY_R2_THRESHOLD = 0.0
 
 SIMPLICITY_RANK = {
     "Linear Regression": 1,
@@ -184,6 +209,18 @@ def fit_final_model(mission_df: pd.DataFrame, model_name: str, n_splits: int = 5
     return search.best_estimator_, search.best_params_
 
 
+def load_bakeoff_results(mission: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    slug = mission.lower().replace(" ", "_")
+    summary_path = OUTPUT_DIR / f"model_bakeoff_{slug}_summary.csv"
+    folds_path = OUTPUT_DIR / f"model_bakeoff_{slug}_folds.csv"
+    if not summary_path.exists() or not folds_path.exists():
+        raise FileNotFoundError(
+            f"Missing bake-off results for {mission}: run `python -m src.model_bakeoff "
+            f"--mission \"{mission}\"` first (expected {summary_path.name} and {folds_path.name})."
+        )
+    return pd.read_csv(summary_path), pd.read_csv(folds_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mission", action="append", choices=REAL_MISSIONS, default=None)
@@ -192,10 +229,11 @@ def main() -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     selection_rows = []
+    selected_models_rows = []
     for mission in missions:
         print(f"\n=== {mission} ===")
         mission_df = get_mission_features(mission)
-        summary, fold_detail = run_bakeoff(mission_df)
+        summary, fold_detail = load_bakeoff_results(mission)
 
         result = select_model(summary, fold_detail)
         ranked = result["ranked_table"]
@@ -238,15 +276,55 @@ def main() -> None:
         joblib.dump(final_model, model_path)
         print(f"  Wrote {model_path}")
 
+        r2_mean = float(result["winner_row"]["R2_mean"])
+        usable = r2_mean > USABILITY_R2_THRESHOLD
+        exclusion_reason = (
+            ""
+            if usable
+            else (
+                f"no reliable model available — best model ({winner}) has R2_mean={r2_mean:.2f}, "
+                f"at or below the usability threshold ({USABILITY_R2_THRESHOLD}); insufficient "
+                "labelled data / no genuine predictive value under repeated cross-validation"
+            )
+        )
+        print(f"  Usable (R2_mean={r2_mean:.2f} > {USABILITY_R2_THRESHOLD}): {usable}")
+        selected_models_rows.append(
+            {
+                "mission": mission,
+                "selected_model": winner,
+                "r2_mean": r2_mean,
+                "usable": usable,
+                "exclusion_reason": exclusion_reason,
+                "best_params": json.dumps(final_params, default=str),
+            }
+        )
+
         ranked_out = ranked.copy()
         ranked_out.insert(0, "Mission", mission)
         ranked_out["selected"] = ranked_out["Model"] == winner
         selection_rows.append(ranked_out)
 
-    pd.concat(selection_rows, ignore_index=True).to_csv(
-        OUTPUT_DIR / "model_selection_summary.csv", index=False
-    )
-    print(f"\nWrote {OUTPUT_DIR / 'model_selection_summary.csv'}")
+    # --mission can target a subset (e.g. re-running just Resilient Earth
+    # after a fix); merge with any prior run's rows for the other missions
+    # instead of overwriting them, since these two files are the persistent
+    # record other modules (predict.py, assemble.py) depend on.
+    summary_path = OUTPUT_DIR / "model_selection_summary.csv"
+    new_summary = pd.concat(selection_rows, ignore_index=True)
+    if summary_path.exists():
+        prior_summary = pd.read_csv(summary_path)
+        prior_summary = prior_summary[~prior_summary["Mission"].isin(missions)]
+        new_summary = pd.concat([prior_summary, new_summary], ignore_index=True)
+    new_summary.to_csv(summary_path, index=False)
+    print(f"\nWrote {summary_path}")
+
+    selected_path = OUTPUT_DIR / "selected_models.csv"
+    new_selected = pd.DataFrame(selected_models_rows)
+    if selected_path.exists():
+        prior_selected = pd.read_csv(selected_path)
+        prior_selected = prior_selected[~prior_selected["mission"].isin(missions)]
+        new_selected = pd.concat([prior_selected, new_selected], ignore_index=True)
+    new_selected.to_csv(selected_path, index=False)
+    print(f"Wrote {selected_path}")
 
 
 if __name__ == "__main__":

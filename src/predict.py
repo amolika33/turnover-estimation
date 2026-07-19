@@ -3,32 +3,35 @@
 Observed turnover is never touched here — this only ever produces
 `turnover_source="predicted"` rows for companies with nothing observed.
 
-ACE is deliberately skipped: its selected model (Elastic Net) has R2<0 under
-repeated cross-validation — worse than predicting the mission mean — so it
-has no genuine predictive value. Running it anyway would put
-fabricated-looking numbers into the final dataset with false confidence.
-ACE's inference companies get a "no reliable model available" status
-instead of a numeric prediction; assemble.py should pass that status
-through rather than a turnover figure."""
+Which missions get a numeric prediction is read from selected_models.csv
+(written by model_selection.py: mission, selected_model, r2_mean, usable,
+exclusion_reason), not hardcoded here — see model_selection.py's
+USABILITY_R2_THRESHOLD docstring for why. A mission with usable=False (ACE,
+currently: its selected model has R2<0 under repeated cross-validation —
+worse than predicting the mission mean, no genuine predictive value) gets
+its exclusion_reason passed through as a status instead of a fabricated-
+looking number."""
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from src.feature_engineering import MERGE_KEY, STATIC_COLS, _melt_year_indexed
+from src.feature_engineering import IDENTITY_COLS, MERGE_KEY, STATIC_COLS, _melt_year_indexed
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
-from src.model_bakeoff import CATEGORICAL_FEATURES, NUMERIC_FEATURES, cast_categoricals, get_mission_features
-from src.data_prep import prepare_source2
+from src.model_bakeoff import (
+    CATEGORICAL_FEATURES,
+    LOG_NUMERIC_FEATURES,
+    NUMERIC_FEATURES,
+    cast_categoricals,
+    check_negative_log_inputs,
+    get_mission_features,
+)
+from src.data_prep import COMPANY_ID_COL, prepare_source2
 from src.sample_construction import YEARS, construct_samples
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
-
-NO_MODEL_MISSIONS = {
-    "ACE": "no reliable model available — insufficient labelled data (best model R2 < 0 under repeated cross-validation)",
-}
-PREDICTABLE_MISSIONS = [m for m in REAL_MISSIONS if m not in NO_MODEL_MISSIONS]
 
 COVARIATE_FIELDS = {
     "Total Employees (CH {year})": "total_employees_ch",
@@ -50,7 +53,8 @@ def build_covariate_snapshot(inference_df: pd.DataFrame) -> pd.DataFrame:
     own pipeline), flagged via is_fallback_year for the reliability check."""
     value_cols = list(COVARIATE_FIELDS.values())
     if inference_df.empty:
-        return pd.DataFrame(columns=MERGE_KEY + ["year"] + value_cols + ["is_fallback_year"])
+        meta_cols = [c for c in IDENTITY_COLS if c not in MERGE_KEY] + [MISSION_COL, "sample_weight"]
+        return pd.DataFrame(columns=MERGE_KEY + ["year"] + value_cols + ["is_fallback_year"] + meta_cols)
 
     long = None
     for prefix_fmt, out_col in COVARIATE_FIELDS.items():
@@ -73,7 +77,11 @@ def build_covariate_snapshot(inference_df: pd.DataFrame) -> pd.DataFrame:
         fallback["is_fallback_year"] = True
         best = pd.concat([best, fallback], ignore_index=True)
 
-    meta_cols = [MISSION_COL, "sample_weight"]
+    # IDENTITY_COLS (name/URL/CH number), not just MERGE_KEY (company_id
+    # alone): _melt_year_indexed's id_vars is MERGE_KEY, so the human-
+    # readable identity columns were dropped by the melt above and need
+    # re-attaching here for a readable predictions_all.csv.
+    meta_cols = [c for c in IDENTITY_COLS if c not in MERGE_KEY] + [MISSION_COL, "sample_weight"]
     best = best.merge(
         inference_df[MERGE_KEY + meta_cols].drop_duplicates(subset=MERGE_KEY), on=MERGE_KEY, how="left"
     )
@@ -144,7 +152,33 @@ def compute_reliability(pred_df: pd.DataFrame, training_df: pd.DataFrame) -> pd.
     return df
 
 
-def predict_mission(mission: str, segmented: pd.DataFrame) -> pd.DataFrame:
+def validate_predictions(features: pd.DataFrame) -> pd.DataFrame:
+    """A turnover prediction that's non-finite (inf/-inf/nan — possible if a
+    row's features are entirely out-of-distribution) or negative (turnover
+    can't be negative) is a modelling failure for that row, not a value to
+    export silently. Flagged via prediction_valid + prediction_invalid_reason
+    and the value is nulled rather than written out looking legitimate."""
+    df = features.copy()
+    pred = df["predicted_total_turnover"].to_numpy(dtype=float)
+    is_finite = np.isfinite(pred)
+    is_negative = is_finite & (pred < 0)
+
+    df["prediction_valid"] = is_finite & ~is_negative
+    df["prediction_invalid_reason"] = np.select(
+        [~is_finite, is_negative], ["non_finite_prediction", "negative_prediction"], default=""
+    )
+    df.loc[~df["prediction_valid"], "predicted_total_turnover"] = np.nan
+    return df
+
+
+def load_selected_models() -> pd.DataFrame:
+    path = OUTPUT_DIR / "selected_models.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {path}: run `python -m src.model_selection` first.")
+    return pd.read_csv(path)
+
+
+def predict_mission(mission: str, segmented: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     _, inference_all, _ = construct_samples(segmented)
     inference_df = inference_all[inference_all[MISSION_COL] == mission].copy()
 
@@ -155,6 +189,12 @@ def predict_mission(mission: str, segmented: pd.DataFrame) -> pd.DataFrame:
     training_df = cast_categoricals(get_mission_features(mission))
     features = compute_reliability(features, training_df)
 
+    # Same guard as model_bakeoff.run_bakeoff before training: log1p on a
+    # negative employees/assets/export-revenue value means bad upstream
+    # data, not something to silently pass through the loaded model's
+    # pipeline (which applies log1p internally).
+    negative_log_inputs = check_negative_log_inputs(features, LOG_NUMERIC_FEATURES, id_col=COMPANY_ID_COL)
+
     slug = mission.lower().replace(" ", "_")
     model = joblib.load(OUTPUT_DIR / f"final_model_{slug}.joblib")
 
@@ -162,8 +202,9 @@ def predict_mission(mission: str, segmented: pd.DataFrame) -> pd.DataFrame:
     features["predicted_total_turnover"] = model.predict(X) if len(X) else []
     features["turnover_source"] = "predicted"
     features["prediction_year"] = features["year"]
+    features = validate_predictions(features)
 
-    return features
+    return features, negative_log_inputs
 
 
 def main() -> None:
@@ -171,24 +212,35 @@ def main() -> None:
     prepped, _ = prepare_source2()
     mapping = load_mapping()
     segmented, _ = segment_missions(prepped, mapping)
+    selected_models = load_selected_models()
 
     all_predictions = []
     for mission in REAL_MISSIONS:
-        if mission in NO_MODEL_MISSIONS:
-            print(f"\n=== {mission}: SKIPPED — {NO_MODEL_MISSIONS[mission]} ===")
+        row = selected_models[selected_models["mission"] == mission]
+        if row.empty or not bool(row.iloc[0]["usable"]):
+            reason = row.iloc[0]["exclusion_reason"] if not row.empty else "mission not found in selected_models.csv"
+            print(f"\n=== {mission}: SKIPPED — {reason} ===")
             continue
 
         print(f"\n=== {mission} ===")
-        preds = predict_mission(mission, segmented)
+        preds, negative_log_inputs = predict_mission(mission, segmented)
         print(f"Predicted turnover for {len(preds)} inference companies")
         if len(preds):
             print("Reliability breakdown:", preds["reliability"].value_counts().to_dict())
+            n_invalid = int((~preds["prediction_valid"]).sum())
+            if n_invalid:
+                print(f"WARNING: {n_invalid} invalid predictions nulled (see prediction_invalid_reason)")
 
         slug = mission.lower().replace(" ", "_")
         out_path = OUTPUT_DIR / f"predictions_{slug}.csv"
         preds.to_csv(out_path, index=False)
         print(f"Wrote {out_path}")
         all_predictions.append(preds)
+
+        if len(negative_log_inputs):
+            log_path = OUTPUT_DIR / f"log1p_negative_values_predict_{slug}.csv"
+            negative_log_inputs.to_csv(log_path, index=False)
+            print(f"WARNING: {len(negative_log_inputs)} negative values in log-transformed features, wrote {log_path}")
 
     if all_predictions:
         combined = pd.concat(all_predictions, ignore_index=True)

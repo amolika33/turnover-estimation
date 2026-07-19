@@ -19,6 +19,8 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 - Because multiple rows belong to the same company, **all cross-validation
   must group by company ID** (`GroupKFold`/`GroupShuffleSplit`), never plain
   random k-fold — otherwise the same company leaks across train/validation.
+  The group key is `company_id` (`data_prep.make_company_id`), never the raw
+  CH number column — see "Documented assumptions and thresholds" below.
 - Mission assignment: space companies are segmented via
   `data/mission_mapping.csv` (Value Stream -> Mission). Adjacent companies
   arrive pre-segmented (already exported as 3 separate mission-specific
@@ -135,8 +137,12 @@ is deliberately re-sequenced to prove out the ML core first, using only the
    dataset only (skip adjacent-company harmonisation for now)
 2. `model_bakeoff.py` — cross-validated comparison on the ~400 labelled
    companies. **Build `sample_weight` support into the model-fitting code
-   from the start** (default weight = 1.0 for every row), even though it's
-   unused until adjacent data arrives — this avoids re-architecting later.
+   from the start**, even though the adjacent-data use case (lower weight
+   for adjacent rows) is unused until that data arrives — this avoids
+   re-architecting later. `sample_weight` is *not* uniformly 1.0: see
+   "Panel row weighting" in "Documented assumptions and thresholds" below —
+   it's currently inverse-frequency by company (1 / that company's row
+   count in the labelled panel), a decision made once the panel was built.
    With only ~400 rows, use careful CV (e.g. repeated k-fold) and watch fold
    variance.
 3. Once adjacent-company data (~23k rows) is available: extend
@@ -183,3 +189,92 @@ pipeline works end-to-end:
   alone) decides identity. Only a true duplicate (same CH number *and* same
   normalised name) is excluded pending manual review; there are currently
   none. See DATA_SCHEMA.md for the full list.
+
+## Documented assumptions and thresholds (data_prep.py -> assemble.py)
+
+Every entry here is also a code comment at the point of decision, and
+(where it affects output data) a column/flag in the relevant CSV — this
+list is the third leg, not the only place it's written down.
+
+- **`company_id`** (`data_prep.make_company_id`): stable, guaranteed-non-null
+  per-company identifier — `ch_<CH number>_<normalised name>` where a CH
+  number exists, else `fallback_<sha1(name+URL)[:12]>`. Used as the
+  `GroupKFold` group key everywhere and the merge/dedup key in
+  `feature_engineering.py`, `predict.py`, `assemble.py`. Why: `GroupKFold`
+  errors/misbehaves on a null group, and the raw CH number column can be
+  null (GeoData Institute has none of its own — this was the live trigger,
+  since it's in Resilient Earth's labelled panel) or shared by genuinely
+  different companies (the `shared_ch_number_anomaly` cases) — the
+  normalised name is folded into the CH-prefixed branch specifically to
+  stop those anomaly companies colliding onto one `company_id`. Column
+  `company_id` is on every processed CSV from `data_prep.py` onward.
+  Side effect caught while wiring this up: the old name+URL+CH composite
+  merge key silently failed for any company with a null Beauhurst URL
+  (`pandas.merge` doesn't treat `NaN == NaN` as a match) — UK Hydrographic
+  Office's 13 labelled panel rows had `founded_year`/`sic_code_1`/
+  `linkedin_industry`/`value_stream` silently blank because of this before
+  the `company_id` switch.
+- **Panel row weighting** (`sample_construction.build_long_panel`):
+  `sample_weight = 1 / company's row count` in the labelled panel. The
+  methodology's unit of analysis is the company, not the company-year, so a
+  company with 13 years of history and one with 1 year should count equally
+  in training rather than 13:1. Consciously accepted tradeoff: this
+  down-weights well-documented companies relative to naive equal-row
+  weighting. Column `sample_weight` in `labelled_panel.csv` /
+  `labelled_features.csv`.
+- **`population_type`** (`sample_construction.build_long_panel`): every
+  panel row is stamped `"space"` now. Cheap stub so adjacent-company rows
+  can slot in as `"adjacent"` later (per the build-order step above)
+  without a rename or migrating already-written data.
+- **`log1p` negative-value guard** (`model_bakeoff.check_negative_log_inputs`):
+  every `LOG_NUMERIC_FEATURES` column (employees, assets, export revenue,
+  and their derived ratios) should be non-negative by definition — a
+  negative value means bad upstream data, not something to silently log1p
+  anyway or clip. Checked before the pipeline runs; any hits are written to
+  `log1p_negative_values_{mission}.csv` rather than passed through. None
+  found in the current Source 2 data — this is future-proofing for
+  adjacent/refreshed data.
+- **Model usability threshold** (`model_selection.USABILITY_R2_THRESHOLD =
+  0.0`): a selected model is only usable for prediction if it beats
+  predicting the mission's own mean turnover (`R2_mean > 0`). This is what
+  currently excludes ACE (`R2_mean=-1.03` under repeated CV) — expressed as
+  a threshold against `selected_models.csv`'s `usable`/`exclusion_reason`
+  columns, not a hardcoded mission name, so a future data refresh that
+  lifts ACE's R² above 0 flips its usability automatically. `predict.py`
+  and `assemble.py` read this file; neither contains mission-specific logic.
+- **Prediction validation** (`predict.validate_predictions`): a predicted
+  turnover that's non-finite or negative is a modelling failure for that
+  row, not a value to export. Flagged via `prediction_valid` /
+  `prediction_invalid_reason` and nulled rather than written out looking
+  legitimate.
+- **Stale observed turnover** (`assemble.STALE_THRESHOLD_YEARS = 3`) —
+  **flagged, not acted on yet**: `turnover_age_years` = (most recent year
+  any company in the dataset filed) − (this company's observed year);
+  `turnover_is_stale` = that gap > 3 years, computed only for
+  `turnover_source="observed"` rows. UK companies must file annually, so
+  >3 consecutive years with nothing filed suggests a company has genuinely
+  stopped reporting turnover, not just an administrative lag — but this is
+  a proposed threshold, not validated against how many companies it
+  actually flags. Stale values are **not** reclassified — they stay
+  `turnover_source="observed"` — pending a decision once we can see the
+  real impact.
+- **One-row-per-company enforcement** (`assemble.enforce_one_company_per_row`):
+  applied at the source (right after selecting from `segmented_df`) and
+  again after the full assembly cascade. Any `company_id` appearing more
+  than once is pulled out and written to
+  `assemble_duplicate_company_id.csv`, not silently dropped (loses
+  information) or silently kept as multiple rows (breaks the
+  one-row-per-company guarantee `assemble.py` exists to provide).
+- **`model_selection.py` reads saved bake-off results** rather than calling
+  `model_bakeoff.run_bakeoff()` again: avoids wasted compute (the repeated
+  5x5 grouped CV bake-off takes minutes per mission) and run-to-run drift
+  (guarantees the selection decision matches the one bake-off run everyone
+  is looking at, rather than trusting two separate invocations agree).
+  Requires `python -m src.model_bakeoff` to have been run first; errors
+  clearly if the CSVs are missing.
+- **`best_params` serialised as JSON** (`json.dumps(..., default=str)`) in
+  `model_bakeoff.py`'s fold detail and `model_selection.py`'s
+  `selected_models.csv`, instead of relying on pandas' implicit
+  `str()`-on-write — keeps the column machine-readable
+  (`json.loads`-able) rather than a Python-repr string that's awkward to
+  parse back.

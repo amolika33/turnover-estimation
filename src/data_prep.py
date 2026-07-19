@@ -1,5 +1,6 @@
 """Load and clean Source 2 (master/mission sheet): known-value corrections and
 duplicate-CH-number resolution, ahead of mission segmentation."""
+import hashlib
 import re
 from pathlib import Path
 
@@ -12,6 +13,7 @@ NAME_COL = "Organisation Name"
 CH_COL = "CH No. (full)"
 CH_SHORT_COL = "CH No."
 URL_COL = "Beauhurst URL"
+COMPANY_ID_COL = "company_id"
 
 # Manually verified fixes to specific known-bad values in Source 2.
 KNOWN_CORRECTIONS = [
@@ -132,10 +134,50 @@ def resolve_duplicate_ch_numbers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     return df, dedup_log
 
 
+def make_company_id(df: pd.DataFrame) -> pd.Series:
+    """Stable, guaranteed-non-null per-company identifier.
+
+    ASSUMPTION (documented per project convention: code comment here +
+    CLAUDE.md + the company_id column itself in every output CSV):
+    CH-number-prefixed ("ch_...") where a CH number exists, else a
+    name+URL-hash fallback ("fallback_..."). Every downstream GroupKFold
+    call and the assemble.py merge key use this instead of raw CH number.
+
+    Why: GroupKFold errors/misbehaves on a null group label. GeoData
+    Institute's CH number is intentionally nulled by apply_known_corrections
+    (it has no genuine CH number of its own) — under the old
+    GROUP_COL="CH No. (full)", that company would carry a null group id
+    into model_bakeoff.py. This was the trigger for adding a real ID.
+
+    The CH-prefixed branch also includes the normalised name, not just the
+    bare CH number: resolve_duplicate_ch_numbers's own shared_ch_number_
+    anomaly cases (e.g. "AeroSpace Cornwall" / "Cornwall Trade & Investment",
+    same CH number, different companies) prove CH numbers aren't always
+    unique to one company. Using the bare CH number as company_id would
+    silently collapse two different real companies onto the same id —
+    exactly the identity bug the name+CH dedup rule exists to prevent.
+    """
+    ch_str = df[CH_COL].astype("string").str.strip()
+    has_ch = ch_str.notna() & (ch_str != "")
+    normalized_name = df[NAME_COL].apply(normalize_name)
+
+    ch_id = "ch_" + ch_str.str.upper() + "_" + normalized_name
+
+    basis = (
+        df[NAME_COL].fillna("").astype(str).str.strip().str.lower()
+        + "|"
+        + df[URL_COL].fillna("").astype(str).str.strip().str.lower()
+    )
+    fallback_id = "fallback_" + basis.apply(lambda s: hashlib.sha1(s.encode("utf-8")).hexdigest()[:12])
+
+    return ch_id.where(has_ch, fallback_id).astype(str)
+
+
 def prepare_source2(path: Path = SOURCE2_PATH) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = load_source2(path)
     df, corrections_log = apply_known_corrections(df)
     df, dedup_log = resolve_duplicate_ch_numbers(df)
+    df[COMPANY_ID_COL] = make_company_id(df)
 
     quality_log = pd.concat(
         [corrections_log.assign(log_type="correction"), dedup_log.assign(log_type="duplicate_ch")],
@@ -149,5 +191,7 @@ if __name__ == "__main__":
     print(f"Rows: {len(cleaned)}")
     print(f"True duplicates (excluded pending review): {int(cleaned['is_true_duplicate'].sum())}")
     print(f"Shared-CH anomalies (logged, not excluded): {int(cleaned['is_shared_ch_anomaly'].sum())}")
+    print(f"company_id non-null coverage: {cleaned['company_id'].notna().mean() * 100:.1f}%")
+    print(f"company_id unique values: {cleaned['company_id'].nunique()} / {len(cleaned)} rows")
     print()
     print(log.to_string(index=False))

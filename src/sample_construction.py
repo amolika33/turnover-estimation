@@ -5,13 +5,22 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data_prep import CH_COL, NAME_COL, URL_COL, prepare_source2
+from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, prepare_source2
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
 
 YEARS = list(range(2013, 2026))
+
+# ASSUMPTION (documented here + CLAUDE.md "Panel row weighting" +
+# sample_weight column itself): the methodology's unit of analysis is the
+# company, not the company-year. A company with 13 years of turnover history
+# and one with 1 year should count equally in training, not 13:1 — so
+# sample_weight = 1 / that company's row count in the labelled panel.
+# Consciously accepted tradeoff: this down-weights well-documented companies
+# relative to naive equal-row weighting.
+POPULATION_TYPE_SPACE = "space"
 
 
 def turnover_col(year: int) -> str:
@@ -28,7 +37,7 @@ def year_value_cols(year: int) -> dict:
     }
 
 
-ID_COLS = [NAME_COL, URL_COL, CH_COL, MISSION_COL, "sample_weight"]
+ID_COLS = [COMPANY_ID_COL, NAME_COL, URL_COL, CH_COL, MISSION_COL, "sample_weight"]
 
 
 def split_labelled_inference(mission_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -62,6 +71,17 @@ def build_long_panel(labelled_df: pd.DataFrame) -> pd.DataFrame:
         panel["total_employees_ch"].isna() & panel["total_employees_est"].notna(),
         "employee_count_source",
     ] = "estimated"
+
+    # Overrides the uniform sample_weight=1.0 inherited from
+    # mission_segmentation.py: see POPULATION_TYPE_SPACE comment above for
+    # why panel rows are weighted by inverse company row-count.
+    panel["sample_weight"] = 1.0 / panel.groupby(COMPANY_ID_COL)[COMPANY_ID_COL].transform("count")
+
+    # Stub for the adjacent-company merge (CLAUDE.md "Current status / build
+    # order" step 3): every row here is a space company today, but tagging
+    # it now means adjacent rows can slot in as "adjacent" tomorrow without
+    # a rename or a migration of already-written data.
+    panel["population_type"] = POPULATION_TYPE_SPACE
 
     return panel
 

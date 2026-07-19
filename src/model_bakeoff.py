@@ -37,8 +37,17 @@ k-NN is scale-sensitive (distance-based) but isn't named in either bucket in
 the CLAUDE.md checklist (only Linear/Ridge/Lasso/ElasticNet/SVR are named
 scale-sensitive; only RF/Extra Trees/GB are named as using raw scale). Scaled
 it here as the standard-practice assumption — flagged for confirmation.
+
+GROUP_COL is company_id (data_prep.make_company_id), not the raw CH number
+column. GroupKFold errors/misbehaves on a null group label, and CH number
+can be null (GeoData Institute has none of its own) or shared by genuinely
+different companies (a handful of shared_ch_number_anomaly cases) — see
+data_prep.py's make_company_id docstring for the full reasoning. This was
+a live bug: GeoData Institute is in Resilient Earth's labelled panel, so
+grouping by raw CH number would have handed GroupKFold a null group.
 """
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -55,7 +64,7 @@ from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardSc
 from sklearn.svm import SVR
 from sklearn.utils.validation import has_fit_parameter
 
-from src.data_prep import prepare_source2
+from src.data_prep import COMPANY_ID_COL, prepare_source2
 from src.feature_engineering import build_features
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
 
@@ -64,7 +73,7 @@ OUTPUT_DIR = REPO_ROOT / "data" / "processed"
 
 RANDOM_STATE = 42
 TARGET_COL = "total_turnover"
-GROUP_COL = "CH No. (full)"
+GROUP_COL = COMPANY_ID_COL
 WEIGHT_COL = "sample_weight"
 
 LOG_NUMERIC_FEATURES = [
@@ -145,6 +154,26 @@ def cast_categoricals(df: pd.DataFrame) -> pd.DataFrame:
     for col in CATEGORICAL_FEATURES:
         df[col] = df[col].apply(_cast_value).astype(object)
     return df
+
+
+def check_negative_log_inputs(df: pd.DataFrame, columns: list[str], id_col: str = GROUP_COL) -> pd.DataFrame:
+    """log1p requires x > -1, and every LOG_NUMERIC_FEATURES column is a
+    financial quantity or ratio that should be non-negative by definition
+    (employee counts, assets, export revenue). A negative value here means
+    bad upstream data, not something to silently pass through log1p (which
+    would still run, just on a nonsensical input) or clip away. Logged so a
+    future data source (e.g. adjacent companies) that does produce
+    negatives gets caught, not silently absorbed."""
+    rows = []
+    for col in columns:
+        mask = df[col] < 0
+        if not mask.any():
+            continue
+        subset = pd.DataFrame({id_col: df.loc[mask, id_col], "column": col, "value": df.loc[mask, col]})
+        rows.append(subset)
+    if not rows:
+        return pd.DataFrame(columns=[id_col, "column", "value"])
+    return pd.concat(rows, ignore_index=True)
 
 
 def build_preprocessor(scale: bool) -> ColumnTransformer:
@@ -237,7 +266,7 @@ def evaluate_model(
                 "MAE": mean_absolute_error(y_test, y_pred, sample_weight=w_test),
                 "RMSE": root_mean_squared_error(y_test, y_pred, sample_weight=w_test),
                 "R2": r2_score(y_test, y_pred, sample_weight=w_test),
-                "best_params": search.best_params_,
+                "best_params": json.dumps(search.best_params_, default=str),
             }
         )
     return fold_rows
@@ -245,12 +274,14 @@ def evaluate_model(
 
 def run_bakeoff(
     mission_df: pd.DataFrame, n_outer_splits: int = 5, n_outer_repeats: int = 5, n_inner_splits: int = 3
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     df = cast_categoricals(mission_df)
     X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
     y = df[TARGET_COL]
     groups = df[GROUP_COL]
     weights = df[WEIGHT_COL]
+
+    negative_log_inputs = check_negative_log_inputs(df, LOG_NUMERIC_FEATURES)
 
     outer_splits = make_repeated_group_kfold_splits(
         X, y, groups, n_splits=n_outer_splits, n_repeats=n_outer_repeats, random_state=RANDOM_STATE
@@ -272,7 +303,7 @@ def run_bakeoff(
     summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
     summary = summary.reset_index().sort_values("MAE_mean")
 
-    return summary, fold_detail
+    return summary, fold_detail, negative_log_inputs
 
 
 def get_mission_features(mission: str) -> pd.DataFrame:
@@ -295,13 +326,18 @@ def main() -> None:
         n_companies = mission_df[GROUP_COL].nunique()
         print(f"\n=== {mission}: {len(mission_df)} panel rows, {n_companies} companies ===")
 
-        summary, fold_detail = run_bakeoff(mission_df)
+        summary, fold_detail, negative_log_inputs = run_bakeoff(mission_df)
         print(summary.to_string(index=False))
 
         slug = mission.lower().replace(" ", "_")
         summary.to_csv(OUTPUT_DIR / f"model_bakeoff_{slug}_summary.csv", index=False)
         fold_detail.to_csv(OUTPUT_DIR / f"model_bakeoff_{slug}_folds.csv", index=False)
         print(f"Wrote data/processed/model_bakeoff_{slug}_summary.csv and _folds.csv")
+
+        if len(negative_log_inputs):
+            log_path = OUTPUT_DIR / f"log1p_negative_values_{slug}.csv"
+            negative_log_inputs.to_csv(log_path, index=False)
+            print(f"WARNING: {len(negative_log_inputs)} negative values in log-transformed features, wrote {log_path}")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_prep import CH_COL, NAME_COL, URL_COL, prepare_source2
+from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, prepare_source2
 from src.mission_segmentation import MISSION_COL, load_mapping, segment_missions
 from src.sample_construction import ID_COLS, YEARS, construct_samples
 
@@ -24,7 +24,11 @@ STATIC_COLS = {
     "Value Stream": "value_stream",
 }
 
-MERGE_KEY = [NAME_COL, URL_COL, CH_COL]
+# Merge key: company_id (see data_prep.make_company_id), not the old
+# name+URL+CH composite — a single guaranteed-non-null column, robust to
+# GeoData-Institute-style nulled CH numbers and shared-CH-number anomalies.
+MERGE_KEY = [COMPANY_ID_COL]
+IDENTITY_COLS = [COMPANY_ID_COL, NAME_COL, URL_COL, CH_COL]
 
 # Columns considered and deliberately excluded, with reasons.
 DROPPED_COLUMNS = {
@@ -89,7 +93,7 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
 
     is_age_anomaly = df["company_age_years"] < 0
     age_log = df.loc[
-        is_age_anomaly, MERGE_KEY + ["year", "founded_year", "company_age_years"]
+        is_age_anomaly, IDENTITY_COLS + ["year", "founded_year", "company_age_years"]
     ].copy()
     age_log["reason"] = "negative_company_age: turnover recorded in a year before Founded"
     age_log = age_log.rename(columns={"company_age_years": "original_company_age_years"})
@@ -121,7 +125,7 @@ def main() -> None:
         non_null = features[c].notna().sum()
         print(f"  {c:<32} non-null: {non_null}/{len(features)}")
 
-    print(f"\nID/metadata columns (not features): {MERGE_KEY + [MISSION_COL, 'sample_weight']}")
+    print(f"\nID/metadata columns (not features): {IDENTITY_COLS + [MISSION_COL, 'sample_weight', 'population_type']}")
     print("Target (never a feature): total_turnover")
 
     if len(age_log):
