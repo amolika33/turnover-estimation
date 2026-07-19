@@ -36,6 +36,15 @@ Claude Code doesn't have to rediscover this structure from scratch each session.
 
 ## Resolved decisions
 
+0. **Join key confirmed: Beauhurst URL (+ company name fallback), not Companies House number.**
+   Source 1's raw export has no Companies House number field at all — only
+   `Beauhurst URL`. Company name is normalised (lowercased, legal suffixes
+   stripped, punctuation stripped) as a fallback for the ~3% of Source 2
+   companies that don't match on URL (including 2 rows with a null
+   Beauhurst URL). Verified against real data: exact URL match covers
+   93.8% of Source 2, normalising trailing-slash/case gets to 94.8%, and
+   name fallback recovers most of the remainder — leaving ~32 companies
+   (2.6%) genuinely absent from Source 1.
 1. **Target variable**: `Total Turnover (CH year)` — NOT `Space Turnover`.
    `Space Turnover` is not used anywhere in this project.
 2. **Row granularity: LONG/PANEL format, not one-row-per-company.**
@@ -93,9 +102,9 @@ Source 1 (raw Beauhurst financials) and Source 2 (master/mission sheet)
 need to be joined at the company level — they are not guaranteed to contain
 the same companies (some will be missing from one side or the other).
 
-- Preferred join key: **Companies House number** (or Beauhurst URL as a
-  fallback) — matches the entity-matching approach already specified in the
-  methodology doc (see CLAUDE.md eligibility rules).
+- Join key: **Beauhurst URL** (normalised for trailing slash/case), with
+  **normalised company name** as fallback. Companies House number is NOT
+  usable as the primary key — Source 1 doesn't have a CH number field.
 - This merge is a **space-companies-only** step. Adjacent companies have no
   Source-2-equivalent file at all — they only ever have Source-1-style raw
   financial data. `data_prep.py` should keep the merge logic clearly scoped
@@ -104,10 +113,26 @@ the same companies (some will be missing from one side or the other).
   source but not the other) rather than silently dropping rows — flag for
   review per the eligibility criteria in CLAUDE.md.
 
-1. **Statement-to-year anchoring** (Source 1): confirm whether "Financial
-   Statement 1" is always the most recent filing, or varies by company —
-   needed if/when Source 1's richer financial-statement detail is joined
-   onto the long-format panel from Source 2 by year.
+1. **Statement-to-year anchoring** (Source 1) — **confirmed**: Financial
+   Statement 1 is always the most recent filing. Verified across all 1,372
+   companies by checking `Date of accounts` is non-increasing from
+   Statement 1 through Statement 10; zero violations found.
+
+## Mission mapping (confirmed)
+
+- `data/mission_mapping.csv` maps Source 2's `Value Stream` to the three
+  missions (ACE / Beyond Earth / Resilient Earth) plus a `Cross-cutting`
+  bucket (`Consultancy / Other`, `Explore New Markets`).
+- The single row with `Value Stream == "Sky UK"` (company: Sky UK itself)
+  is a data-entry error — the company's own name was pasted into the
+  Value Stream field. It is excluded from mission mapping entirely (not
+  treated as a category, not folded into Cross-cutting).
+- 6 Companies House numbers in Source 2 are shared by more than one company
+  row (11 rows total), including mission-conflicting cases (e.g. CH
+  `08750033` = "Seradata Ltd" tagged Consultancy/Other and "Slingshot
+  Aerospace" tagged Explore New Markets). These are logged as a data
+  quality issue and excluded from training pending manual review — not
+  auto-resolved.
 
 ## Planned future additions
 

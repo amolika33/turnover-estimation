@@ -34,6 +34,7 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
   regression bake-off, and its own selected model. Do not pool missions into one model.
 - **Cross-cutting companies** are excluded from modelling entirely (retained for
   reference only) — they can't be assigned to a single mission without extra assumptions.
+  (Planned extension, not yet built — see "Planned: cross-cutting predictions" below.)
 - **Adjacent-company datasets** (one per mission) exist only to enlarge the labelled
   training set. They are never part of the inference/prediction population.
   Model *selection* must be validated on held-out **space companies only**, not
@@ -108,3 +109,34 @@ is deliberately re-sequenced to prove out the ML core first, using only the
    space companies so the model trusts them less.
 
 Validate each stage against a small toy sample before moving to the next.
+
+## Planned: cross-cutting company predictions (not yet built)
+
+The written methodology only says cross-cutting companies (Consultancy / Other,
+Explore New Markets Value Streams) are "retained for reference." We eventually
+want turnover predictions for them too, which goes beyond that — this is an
+explicitly deferred extra step, to be built only after the core 3-mission
+pipeline works end-to-end:
+
+- At **prediction time only** (never for training), assign each cross-cutting
+  company a best-guess mission via buzzword/keyword similarity to the three
+  mission categories — reusing the same buzzword-based logic planned for
+  adjacent-company mission assignment (adjacent companies won't have `Value
+  Stream` either, so this logic is shared).
+- Score the company with whichever mission model that best-guess assignment
+  points to.
+- Mark these predictions clearly as **"approximate"** in the reliability/
+  confidence indicator (distinct from normal predicted-vs-observed status),
+  since the mission assignment itself is inferred, not given.
+- Cross-cutting companies still never enter training data for any mission
+  model, no exceptions — this only affects what happens at inference time.
+
+## Data quality exclusions from training (see DATA_SCHEMA.md for detail)
+
+- The `Value Stream == "Sky UK"` row is a data-entry error (own company name
+  pasted into the field) — excluded from mission mapping entirely, not folded
+  into Cross-cutting.
+- 6 Companies House numbers in Source 2 are shared by multiple company rows
+  (11 rows), including mission-conflicting cases. These are logged in a data
+  quality log and excluded from training pending manual review, rather than
+  auto-resolved.
