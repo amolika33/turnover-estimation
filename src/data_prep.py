@@ -97,8 +97,11 @@ def resolve_duplicate_ch_numbers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     df["_normalized_name"] = df[NAME_COL].apply(normalize_name)
 
     has_ch = df[CH_COL].notna()
-    dup_ch = pd.Series(False, index=df.index)
-    dup_ch[has_ch] = df.loc[has_ch, CH_COL].duplicated(keep=False)
+    # NaN CH numbers are mutually "equal" under duplicated(), so AND with
+    # has_ch to zero those out rather than partial-assigning into a
+    # pre-allocated bool Series (which trips pandas' incompatible-dtype
+    # FutureWarning when the duplicated() result isn't plain numpy bool).
+    dup_ch = df[CH_COL].duplicated(keep=False) & has_ch
 
     same_name_in_group = df.groupby(df[CH_COL].where(dup_ch))["_normalized_name"].transform(
         lambda names: names.nunique() == 1
