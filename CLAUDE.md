@@ -50,9 +50,16 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 
 ## Pipeline stages (implement as separate modules — see `src/`)
 
-1. `data_prep.py` — schema validation, duplicate resolution (Companies House
-   number preferred, name/domain fallback), variable standardisation, missingness
-   assessment, eligibility filtering.
+1. `data_prep.py` — schema validation, duplicate resolution, variable
+   standardisation, missingness assessment, eligibility filtering.
+   **Duplicate resolution rule**: two rows are the same company only if they
+   share a CH number *and* a normalised name. A shared CH number with
+   genuinely different names is a data-quality anomaly, not a duplicate
+   identity — log it, but never merge those rows' financials or mission
+   assignments. Company name is the deciding factor, not CH number alone
+   (some CH numbers are legitimately reused across distinct legal entities,
+   e.g. a parent charity's number appearing on multiple affiliated orgs).
+   Expect more of these once the ~23k adjacent dataset is added.
 2. `mission_segmentation.py` — split space-company dataset into ACE / Beyond Earth /
    Resilient Earth / cross-cutting (excluded); merge each with its adjacent dataset.
 3. `sample_construction.py` — within each mission dataset, split into labelled
@@ -136,7 +143,13 @@ pipeline works end-to-end:
 - The `Value Stream == "Sky UK"` row is a data-entry error (own company name
   pasted into the field) — excluded from mission mapping entirely, not folded
   into Cross-cutting.
-- 6 Companies House numbers in Source 2 are shared by multiple company rows
-  (11 rows), including mission-conflicting cases. These are logged in a data
-  quality log and excluded from training pending manual review, rather than
-  auto-resolved.
+- 6 Companies House numbers in Source 2 were originally shared by multiple
+  company rows (11 rows). 2 were confirmed data-entry errors and corrected
+  in `data_prep.py` (GeoData Institute's bogus CH number nulled; ISVR
+  Consulting's corrected to `14701170`). The remaining 4 groups (9 rows) are
+  genuinely different companies that happen to share a reused CH number
+  (e.g. a parent charity's number) — logged as `shared_ch_number_anomaly`
+  but **not** excluded from training, since company name (not CH number
+  alone) decides identity. Only a true duplicate (same CH number *and* same
+  normalised name) is excluded pending manual review; there are currently
+  none. See DATA_SCHEMA.md for the full list.

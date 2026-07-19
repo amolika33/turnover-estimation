@@ -127,12 +127,24 @@ the same companies (some will be missing from one side or the other).
   is a data-entry error — the company's own name was pasted into the
   Value Stream field. It is excluded from mission mapping entirely (not
   treated as a category, not folded into Cross-cutting).
-- 6 Companies House numbers in Source 2 are shared by more than one company
-  row (11 rows total), including mission-conflicting cases (e.g. CH
-  `08750033` = "Seradata Ltd" tagged Consultancy/Other and "Slingshot
-  Aerospace" tagged Explore New Markets). These are logged as a data
-  quality issue and excluded from training pending manual review — not
-  auto-resolved.
+- 6 Companies House numbers in Source 2 were originally found shared by more
+  than one company row (11 rows total). Two are confirmed data-entry errors,
+  corrected in `data_prep.py` (`KNOWN_CORRECTIONS`), not in the raw file:
+  - **GeoData Institute** had no genuine CH number of its own (University of
+    Southampton entity) — was carrying `RC000668` (Univ. of Southampton's
+    charity number). Nulled; falls back to URL/name matching.
+  - **ISVR Consulting**'s correct CH number is `14701170` — was also
+    incorrectly carrying `RC000668`.
+  - **General rule for the remaining 4 groups** (9 rows, e.g. CH `08750033`
+    = "Seradata Ltd" vs. "Slingshot Aerospace"; CH `RC000817` = "RAL Space"
+    vs. "Science and Technology Facilities Council" vs. "Centre for
+    Environmental Data Analysis"): a shared CH number does **not** by itself
+    make two rows the same company. `data_prep.py` only treats rows as a true
+    duplicate (excluded from training pending manual review) if the CH number
+    **and** the normalised company name both match. A shared CH number with
+    genuinely different names is logged as a `shared_ch_number_anomaly` and
+    the rows are kept as separate entities — never merged, not excluded from
+    training on this basis alone. Currently 0 true duplicates, 9 anomalies.
 
 ## Planned future additions
 
