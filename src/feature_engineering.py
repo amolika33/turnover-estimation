@@ -67,7 +67,7 @@ def _melt_year_indexed(segmented_df: pd.DataFrame, prefix_fmt: str, out_col: str
     return long.drop(columns="_col")
 
 
-def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.DataFrame:
+def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = panel.merge(
         segmented_df[MERGE_KEY + list(STATIC_COLS)].rename(columns=STATIC_COLS),
         on=MERGE_KEY,
@@ -87,10 +87,18 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.DataFram
         [np.inf, -np.inf], np.nan
     )
 
-    return df
+    is_age_anomaly = df["company_age_years"] < 0
+    age_log = df.loc[
+        is_age_anomaly, MERGE_KEY + ["year", "founded_year", "company_age_years"]
+    ].copy()
+    age_log["reason"] = "negative_company_age: turnover recorded in a year before Founded"
+    age_log = age_log.rename(columns={"company_age_years": "original_company_age_years"})
+    df.loc[is_age_anomaly, "company_age_years"] = np.nan
+
+    return df, age_log
 
 
-def build_features(segmented_df: pd.DataFrame) -> pd.DataFrame:
+def build_features(segmented_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     panel_all, _, _ = construct_samples(segmented_df)
     return add_features(panel_all, segmented_df)
 
@@ -100,11 +108,13 @@ def main() -> None:
     mapping = load_mapping()
     segmented, _ = segment_missions(prepped, mapping)
 
-    features = build_features(segmented)
+    features, age_log = build_features(segmented)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "labelled_features.csv"
     features.to_csv(out_path, index=False)
+    log_path = OUTPUT_DIR / "feature_engineering_quality_log.csv"
+    age_log.to_csv(log_path, index=False)
 
     print("Feature columns (%d):" % len(FEATURE_COLUMNS))
     for c in FEATURE_COLUMNS:
@@ -114,14 +124,13 @@ def main() -> None:
     print(f"\nID/metadata columns (not features): {MERGE_KEY + [MISSION_COL, 'sample_weight']}")
     print("Target (never a feature): total_turnover")
 
-    age_anomalies = features[features["company_age_years"] < 0]
-    if len(age_anomalies):
+    if len(age_log):
         print(
-            f"\nData quality flag: {len(age_anomalies)} rows across "
-            f"{age_anomalies[NAME_COL].nunique()} companies have a negative "
+            f"\nData quality flag: {len(age_log)} rows across "
+            f"{age_log[NAME_COL].nunique()} companies had a negative "
             "company_age_years (turnover recorded in a year before Founded). "
-            f"Companies: {sorted(age_anomalies[NAME_COL].unique())}. "
-            "Not corrected — no verified fix, left as-is for review."
+            "company_age_years nulled for those rows only (other features/"
+            f"turnover kept); logged to {log_path}."
         )
 
     print(f"\nDropped columns ({len(DROPPED_COLUMNS)}):")
