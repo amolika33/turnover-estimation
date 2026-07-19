@@ -77,6 +77,36 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 8. `assemble.py` — recombine observed + predicted turnover across all three
    missions (+ cross-cutting passthrough) into the final completed dataset.
 
+## model_bakeoff.py checklist (methodology doc §1.7-1.8 — unambiguous, do not deviate)
+
+**Candidate models — all of these, not a subset:**
+- Linear Regression
+- Ridge, Lasso, Elastic Net
+- Random Forest, Extra Trees
+- Gradient Boosting
+- Support Vector Regression (SVR)
+- k-Nearest Neighbours (k-NN)
+
+**Requirements:**
+- All preprocessing (imputation, encoding, scaling) is fit inside the pipeline,
+  per CV fold, on training data only — never before the split.
+- Scaling applied only to scale-sensitive models (Linear/Ridge/Lasso/Elastic
+  Net/SVR); tree-based models (Random Forest/Extra Trees/Gradient Boosting)
+  use raw feature scale — do not scale features for them.
+- Hyperparameter tuning via cross-validation for every model — no fixed
+  defaults for any candidate.
+- Cross-validation must be **grouped by company ID** (not plain k-fold),
+  since the panel data has multiple rows per company.
+- Validation performance is reported primarily on held-out **space companies
+  specifically**, not pooled space+adjacent (relevant once adjacent data is
+  merged in later).
+- Report all three metrics for every model: **MAE, RMSE, R²** — no single
+  metric decides the winner.
+- **Tie-breaking rule**: when models show comparable performance, prefer the
+  simpler one.
+- **One model selected independently per mission** — three separate winners
+  are allowed, not one model forced across all three.
+
 ## Tech stack
 
 - Python, pandas, scikit-learn (Pipeline, ColumnTransformer, cross_val_score / GridSearchCV or RandomizedSearchCV)
