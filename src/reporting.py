@@ -2,13 +2,13 @@
 out-of-fold actual-vs-predicted, and residuals, per mission. Structured
 CSVs only — no visualisation tooling assumed.
 
-Uses the CURRENTLY saved final_model_*.joblib artifacts, which predate the
-Source 3 (grants/accelerator/funding) features added to feature_engineering.py
-— the full 9-model bake-off hasn't been re-run against the expanded feature
-set yet (pending sanity-check sign-off, per that commit). These artifacts
-therefore reflect the pre-Source3, 12-feature Lasso models for all three
-missions. Regenerate everything in this module once the Source3 bake-off is
-approved, re-run, and model_selection.py has refit against it.
+Uses the CURRENTLY saved final_model_*.joblib artifacts (produced by
+model_selection.py from the latest model_bakeoff.py run) — rerun the
+bake-off + model_selection first if the feature set or data has changed.
+feature_weights_{mission}.csv is linear-model-only: missions whose selected
+model has no single coefficient per feature (e.g. Gradient Boosting/Random
+Forest) are skipped there with a printed reason, but still get their
+performance_summary/actual_vs_predicted/residuals artifacts.
 """
 import json
 from pathlib import Path
@@ -181,7 +181,15 @@ def main() -> None:
     for mission in REAL_MISSIONS:
         slug = mission.lower().replace(" ", "_")
         print(f"=== {mission}: feature weights ===")
-        weights = extract_feature_weights(mission)
+        try:
+            weights = extract_feature_weights(mission)
+        except ValueError as exc:
+            # Non-linear winners (e.g. Gradient Boosting/Random Forest) have
+            # no single coefficient per feature — feature_weights_{mission}.csv
+            # is a linear-model-only artifact, so skip it here rather than
+            # aborting the OOF/residuals generation below for every mission.
+            print(f"SKIPPED: {exc}\n")
+            continue
         weights.to_csv(OUTPUT_DIR / f"feature_weights_{slug}.csv", index=False)
         print(weights.head(10).to_string(index=False))
         print(f"Wrote {OUTPUT_DIR / f'feature_weights_{slug}.csv'} ({len(weights)} features)\n")
