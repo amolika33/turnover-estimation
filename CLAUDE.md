@@ -494,8 +494,52 @@ Separate pipeline stage, built on the completed dataset above — see
    result; `forecast_recursive.py` must apply the Persistence formula
    directly (`BENCHMARK_PREDICT_FNS` in `forecast_bakeoff.py`), not load a
    fitted model.
-7. `forecast_recursive.py` — apply the selected one-year-ahead model
-   recursively from each company's baseline year out to 2030.
+7. 🔶 `forecast_recursive.py` — built, growth-routing verified against a
+   company sample, full 2030 run not yet executed (pending confirmation).
+   **Not a per-mission fixed model after all**: forecast_selection.py's
+   Persistence-everywhere result was checked with
+   `forecast_evidence_group_diagnostic.py` before this module was built,
+   splitting horizon=1 performance by evidence group (uninformative — Group
+   B has only 1-2 rows per model per mission) and by actual growth
+   trajectory (informative, and NOT uniform): ACE's Persistence win was a
+   flat-majority artifact (Ridge clearly wins among growing companies,
+   R2=0.982 vs Persistence not in the top 5); Beyond Earth/Resilient
+   Earth's Persistence win holds even restricted to growing companies. But
+   "best average one-step predictor" and "fit for a growth-identification
+   objective" are different questions — Persistence is structurally
+   incapable of ever forecasting growth, so applying it recursively for up
+   to 17 steps would flatten every company's trajectory regardless of
+   mission, undermining the £10M/£50M/gazelle objective. Routing is
+   **growth-trajectory-conditional per company**, re-evaluated at every
+   recursive step (not fixed at baseline — a company's trend can genuinely
+   change over a multi-year projection, and fixing it would let one early
+   growth burst compound blindly for up to 17 years):
+   - `GROWTH_THRESHOLD = log1p(0.10)` (~0.0953): reuses the same 10% YoY
+     cut the diagnostic and the planned gazelle criteria both use, rather
+     than inventing a second number.
+   - Primary signal is `log_growth_3y_mean`, not `log_growth_1y` — smoothed
+     against a single noisy predicted year (later recursive steps' history
+     includes the model's own earlier predictions), and thematically
+     consistent with the gazelle definition's own 3-consecutive-year
+     framing. Falls back to `log_growth_1y`, then "stable" if neither
+     exists (e.g. Group D companies with zero real history).
+   - "growing" → Ridge (ACE only, per the diagnostic) or Company Historical
+     CAGR (Beyond Earth / Resilient Earth / Cross-Cutting — CAGR beats
+     Ridge in both remaining missions' growing-company subset, and is
+     philosophically the right tool for "continue this company's own
+     trend" vs Ridge's cross-company signal). Cross-Cutting never uses
+     Ridge — no Cross-Cutting-specific fitted model exists.
+   - "stable" (including declining) → Persistence, uniformly; the
+     diagnostic only examined growing vs not-growing, so no separate
+     declining-company treatment is invented.
+   Verified against a company sample before committing to the full run:
+   Air Liquide (Beyond Earth) has log_growth_1y=-0.37 but
+   log_growth_3y_mean=+0.10 → correctly "growing" (reads through one bad
+   year to an established uptrend); AXA XL (Cross-Cutting) has
+   log_growth_1y=+0.65 but log_growth_3y_mean=-0.76 → correctly "stable"
+   (doesn't chase a one-year spike). Baseline-year classification counts:
+   ACE 33 growing/162 stable, Beyond Earth 88/371, Resilient Earth 36/229,
+   Cross-Cutting 42/261.
 8. `forecast_assemble.py` — combine into final company-level 2030
    trajectories.
 9. `forecast_reporting.py` — **added to the plan, not yet built**.
