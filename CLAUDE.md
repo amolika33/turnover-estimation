@@ -355,3 +355,21 @@ list is the third leg, not the only place it's written down.
   `str()`-on-write — keeps the column machine-readable
   (`json.loads`-able) rather than a Python-repr string that's awkward to
   parse back.
+- **`linkedin_industry` dropped from the feature set entirely**
+  (`feature_engineering.py`'s `DROPPED_COLUMNS`, removed from `STATIC_COLS`
+  and `FEATURE_COLUMNS`; also removed from `model_bakeoff.py`'s
+  `CATEGORICAL_FEATURES` and `predict.py`'s `compute_reliability`
+  out-of-distribution category check): it's a raw, externally-scraped
+  LinkedIn classification, not part of the project's own deliberate
+  mission/industry taxonomy — `value_stream` and `sic_code_1` already cover
+  company categorisation more reliably (curated for this project
+  specifically) and overlap heavily with what `linkedin_industry` captures.
+  It was also one of the two high-cardinality columns (158 categories) that
+  caused the original linear-model numerical instability (Linear
+  Regression/Ridge/Elastic Net coefficients blowing up to 1e83+, see
+  `model_bakeoff.py`'s module docstring) before `min_frequency` bucketing
+  was added — removing it outright is more robust than continuing to rely
+  on that bucketing to contain it. Full bake-off, model selection,
+  predictions, and reporting artifacts re-run against the reduced feature
+  set; see `model_performance_summary.csv` for the resulting per-mission
+  metrics.

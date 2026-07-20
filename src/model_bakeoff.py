@@ -128,7 +128,6 @@ CATEGORICAL_FEATURES = [
     "employee_count_source",
     "company_size",
     "sic_code_1",
-    "linkedin_industry",
     "value_stream",
 ]
 

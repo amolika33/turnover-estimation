@@ -131,7 +131,7 @@ def compute_reliability(pred_df: pd.DataFrame, training_df: pd.DataFrame) -> pd.
         for col in ["total_employees", "balance_sheet_total_assets"]
     }
     seen_categories = {
-        col: set(training_df[col].dropna()) for col in ["sic_code_1", "linkedin_industry", "value_stream", "company_size"]
+        col: set(training_df[col].dropna()) for col in ["sic_code_1", "value_stream", "company_size"]
     }
 
     reasons = []

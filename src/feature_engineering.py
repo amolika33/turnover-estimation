@@ -10,15 +10,14 @@ TODO (adjacent-company integration, not yet built — see
 ADJACENT_DATA_REQUIREMENTS.md): add `population_type` (already stamped
 "space" on every panel row by sample_construction.build_long_panel, ready
 to take "adjacent" once that data is merged in) as a categorical feature
-here, alongside `sic_code_1`/`linkedin_industry`/`value_stream`. The point
-isn't just carrying the label through — it's letting the model *learn* a
-systematic space-vs-adjacent adjustment (a coefficient/split on
-population_type) rather than population_type only ever acting through
-`sample_weight` (ADJACENT_SAMPLE_WEIGHT in model_bakeoff.py). Weighting
-alone can down-rank adjacent rows' influence on the fit; it can't let the
-model represent "adjacent companies of this profile tend to report
-turnover differently than space companies of this profile," which a
-feature can."""
+here, alongside `sic_code_1`/`value_stream`. The point isn't just carrying
+the label through — it's letting the model *learn* a systematic
+space-vs-adjacent adjustment (a coefficient/split on population_type)
+rather than population_type only ever acting through `sample_weight`
+(ADJACENT_SAMPLE_WEIGHT in model_bakeoff.py). Weighting alone can
+down-rank adjacent rows' influence on the fit; it can't let the model
+represent "adjacent companies of this profile tend to report turnover
+differently than space companies of this profile," which a feature can."""
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +34,6 @@ SOURCE3_PATH = REPO_ROOT / "data" / "raw" / "beauhurst_company_export_20260720-0
 STATIC_COLS = {
     "Founded": "founded_year",
     "SIC Code 1": "sic_code_1",
-    "LinkedIn Industry": "linkedin_industry",
     "Value Stream": "value_stream",
 }
 
@@ -92,6 +90,7 @@ DROPPED_COLUMNS = {
     "Academic Spinout Events N - Academic Institution Name / date": "same as accelerator names — used internally to derive is_academic_spinout only",
     "Growth signals - Accelerator": "~100% redundant with derived has_attended_accelerator (1 disagreement out of 1,372 rows) — kept the derived version, it's clearer to explain (built from an explicit date/name slot, not an opaque platform flag)",
     "Innovation signals - Academic spinout": "~100% redundant with derived is_academic_spinout (0 disagreements out of 1,372 rows) — same reasoning as Growth signals - Accelerator",
+    "LinkedIn Industry": "raw, externally-scraped LinkedIn classification, not part of the project's own deliberate mission/industry taxonomy — Value Stream and SIC Code 1 already cover company categorisation more reliably (curated for this project specifically) and overlap heavily with what LinkedIn Industry captures. Also one of the two high-cardinality columns (158 categories) that caused the original linear-model numerical instability (Linear Regression/Ridge/Elastic Net blowing up to 1e83+, see model_bakeoff.py's module docstring) before min_frequency bucketing was added — removing it outright is more robust than continuing to rely on that bucketing to contain it.",
 }
 
 FEATURE_COLUMNS = [
@@ -105,7 +104,6 @@ FEATURE_COLUMNS = [
     "export_revenue_per_employee",
     "company_size",
     "sic_code_1",
-    "linkedin_industry",
     "value_stream",
 ] + list(SOURCE3_SAFE_BOOLEAN_SIGNALS.values()) + [
     "has_attended_accelerator",
