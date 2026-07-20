@@ -423,9 +423,10 @@ Separate pipeline stage, built on the completed dataset above — see
    shift-based target construction (sec 5) + evidence groups A-D (sec 6).
 4. ✅ `forecast_feature_engineering.py` — lag/log/growth/rolling/history-
    quality/company/derived-financial/data-quality features (sec 7.1-7.8).
-5. `forecast_bakeoff.py` — 13-candidate model comparison, rolling-origin
-   temporal validation (not grouped k-fold — panel data here is
-   chronological, not just company-grouped), per-horizon reporting.
+5. ✅ `forecast_bakeoff.py` — 12-candidate model comparison (13th, CatBoost,
+   skipped — not installed), rolling-origin temporal validation (not
+   grouped k-fold — panel data here is chronological, not just
+   company-grouped), per-horizon reporting.
    **Numeric-stability carryover from the estimation pipeline's BT/BAE
    Systems lesson, checked empirically before this module is built**: raw
    turnover-scale features (`target_turnover_next_year`,
@@ -469,8 +470,30 @@ Separate pipeline stage, built on the completed dataset above — see
    not a data error: Cobham's filed employee count really did drop from
    10,185 to 51 in 2020, consistent with its real Advent International
    breakup/restructuring that year.)
-6. `forecast_selection.py` — select the strongest model per mission from
-   the bake-off results.
+   **Headline finding, not a bug**: the 3 simple benchmarks (Persistence,
+   Mission-Average Growth, Company Historical CAGR) consistently matched or
+   beat every ML candidate across all 3 missions and most horizons —
+   one-year-ahead turnover is highly autocorrelated for established
+   companies, so "no growth" and "simple trend" are hard baselines to beat.
+   SVR and Histogram Gradient Boosting consistently underperformed
+   everywhere. 0 negative-log-input warnings on the full run.
+6. ✅ `forecast_selection.py` — selects the strongest model per (mission,
+   horizon) from the bake-off results, mirroring `model_selection.py`'s
+   robustness-filter → composite-rank → simplicity-tie-break convention,
+   with `SIMPLICITY_RANK` extended so the 3 benchmarks rank simplest of
+   all (below Linear Regression — no fitting, no hyperparameters, no
+   preprocessing). Every selection is tagged `is_benchmark`, printed and
+   written distinctly (`forecast_selected_models.csv`,
+   `forecast_selection_ranking.csv`) — never silently presented as if an
+   ML model had won. **Result: all 3 missions selected a benchmark
+   (Persistence) as the horizon="1" model — the one actually refit and
+   deployed by `forecast_recursive.py`** (horizons 2/3/4+ are diagnostic
+   only, since a one-year-ahead model is applied recursively, not
+   separately re-selected per horizon) — no ML model beat Persistence at
+   horizon 1 in any mission. No `.joblib` files exist for any mission as a
+   result; `forecast_recursive.py` must apply the Persistence formula
+   directly (`BENCHMARK_PREDICT_FNS` in `forecast_bakeoff.py`), not load a
+   fitted model.
 7. `forecast_recursive.py` — apply the selected one-year-ahead model
    recursively from each company's baseline year out to 2030.
 8. `forecast_assemble.py` — combine into final company-level 2030
