@@ -69,6 +69,9 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 4. `feature_engineering.py` — company characteristics, financial indicators,
    commercial activity, categorical features, composite indicators. Must only use
    information available at prediction time (no target leakage).
+   **Commercial activity is now built** from Source 3 (grants/accelerator/
+   funding enrichment) — see "Data sources" below for the feature list.
+   Composite indicators are still not built.
 5. `model_bakeoff.py` — candidate models: Linear, Ridge, Lasso, Elastic Net,
    Random Forest, Extra Trees, Gradient Boosting, SVR, k-NN. Cross-validated
    hyperparameter search per model, per mission. Metrics: MAE, RMSE, R².
@@ -123,9 +126,32 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 
 ## Data sources
 
-See `DATA_SCHEMA.md` for the structure of the two source Excel files
-(Beauhurst raw export + mission-tagged master sheet) and open questions that
-need resolving before feature engineering can be finalised.
+See `DATA_SCHEMA.md` for the structure of the source Excel files (Beauhurst
+raw export + mission-tagged master sheet + grants/accelerator/funding
+enrichment) and open questions that need resolving before feature
+engineering can be finalised.
+
+- **Source 1**: `beauhurst_company_export_20260709-115139.csv.xlsx` — raw
+  Beauhurst export, repeated Financial Statement blocks.
+- **Source 2**: `Published Space Capabilities Catalogue_Cleaned.xlsx` —
+  curated master/mission-tagged sheet, year-panel format. Primary source
+  `feature_engineering.py` is built around.
+- **Source 3**: `beauhurst_company_export_20260720-092535.csv.xlsx` —
+  grants/accelerator/funding enrichment for Source 1's company universe
+  (same 1,372 rows), joined into the pipeline by Beauhurst URL. Added
+  `feature_engineering.py` features: 10 boolean commercial/growth signals
+  (`signal_equity_fundraising`, `signal_debt_fundraising`, `signal_mbo_mbi`,
+  `signal_accelerator`, `signal_acquired`, `signal_made_acquisition`,
+  `signal_ipo`, `signal_academic_spinout`, `signal_rd_grant`,
+  `signal_patent`), `has_attended_accelerator` / `accelerator_count` /
+  `is_academic_spinout` (derived from event-slot columns, not the raw
+  names/dates themselves), and `grants_count` / `grants_total_amount` /
+  `grant_recency_years` + the fundraising equivalents (recency computed
+  relative to each panel row's year, nulled rather than negative when the
+  event postdates that row — see `feature_engineering.py`'s `add_features`
+  comment). 3 boolean signals (the two "scaleup" flags and "High growth
+  list") were excluded as an unresolved turnover-derivation risk — see
+  DATA_SCHEMA.md "Source 3" section.
 
 ## Current status / build order (adjusted)
 

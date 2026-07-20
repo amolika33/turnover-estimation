@@ -34,6 +34,53 @@ Claude Code doesn't have to rediscover this structure from scratch each session.
 - Some columns visibly derive from Source 1 (same underlying Beauhurst data,
   reshaped) — expect overlap/duplication, not independent information.
 
+## Source 3: Grants/accelerator/funding enrichment (`beauhurst_company_export_20260720-092535.csv.xlsx`)
+
+- One row per company, **same 1,372-company universe as Source 1** (same row
+  count, confirmed) — this is an *enrichment* file, not a new population. It
+  adds candidate features for companies already in Source 1; it does not add
+  new training rows.
+- No Companies House number field (same gap as Source 1) — joins to the rest
+  of the pipeline by normalised **Beauhurst URL** only.
+- 13 boolean signal columns (`Growth signals - ...` / `Innovation signals -
+  ...`) — not 14 as originally described when this file was introduced; the
+  actual file has 13.
+- Up to 5 `Accelerator Attendances N` slots (name + entry/exit dates) and up
+  to 2 `Academic Spinout Events N` slots (institution + date).
+- Grants and Fundraisings summaries: count, total amount, latest/earliest
+  dates. **Data quality note**: the amount columns (`Grants - Total amount
+  ...`, `Grants - Amount received ... latest grant`, and the Fundraisings
+  equivalents) mix real numbers with a literal `"(no value)"` string
+  sentinel, forcing pandas to infer object dtype — `feature_engineering.py`'s
+  `_clean_currency` coerces this to numeric, treating the sentinel as
+  missing (not 0, which would misrepresent an unknown amount as a confirmed
+  zero).
+- IPO market capitalisation — present but too sparse (19/1,372 non-null) to
+  be useful this pass.
+
+**Join match rate against the space-company dataset** (segmented_df, 1,225
+companies): 1,155/1,225 (94.3%) matched by normalised Beauhurst URL — in
+line with Source 1's own ~94% match rate against Source 2 (same underlying
+gap: Source 1/3's collection isn't a perfect superset of Source 2's). 70
+unmatched companies, including the 2 companies with no Beauhurst URL at all
+(UK Hydrographic Office, ONS Data Science Campus).
+
+**Leakage check performed before including any signal column**: the two
+"scaleup" booleans (`Growth signals - 10%/20% scaleup`) and `Growth signals
+- High growth list` were checked against Source 2's own turnover-growth
+columns (`Turnover Growth Rate (OECD)`, `Latest 3 Years: Growth Rate (OECD:
+20%/10%)` — both already confirmed turnover-derived and excluded from
+features). Only 14-17%/7-9% agreement — these are *not* a re-export of
+Source 2's derived columns — but Beauhurst's own published "scaleup"/"high
+growth" methodology is itself typically based on the OECD high-growth-
+enterprise definition (>=10%/20% p.a. average growth in employees **or
+turnover** over 3 years), so turnover-independence couldn't be confirmed.
+Excluded per user decision, consistent with the project's absolute
+no-turnover-derivation rule. See `feature_engineering.py`'s
+`DROPPED_COLUMNS` for the full reasoning, and the 10 booleans that were
+confirmed safe (fundraising/M&A/accelerator/patent-type events — none
+turnover-related).
+
 ## Resolved decisions
 
 0. **Join key confirmed: Beauhurst URL (+ company name fallback), not Companies House number.**
@@ -148,8 +195,12 @@ the same companies (some will be missing from one side or the other).
 
 ## Planned future additions
 
-- Grants data (number/amount/dates) — partially present in Source 1 already
-  (`Grants - ...` columns); to be expanded.
-- Accelerator attendance — partially present in Source 1
-  (`Accelerator Attendances - ...`); to be expanded, especially for adjacent
-  companies where this + financials may be the *only* data available.
+- ~~Grants data (number/amount/dates) — partially present in Source 1
+  already; to be expanded.~~ **Done** — see "Source 3" above and
+  `feature_engineering.py` (`grants_count`, `grants_total_amount`,
+  `grant_recency_years`, and the fundraising equivalents).
+- ~~Accelerator attendance — partially present in Source 1; to be
+  expanded.~~ **Done** — see "Source 3" above (`has_attended_accelerator`,
+  `accelerator_count`). Still relevant for adjacent companies, where this +
+  financials may be the *only* data available (Source 3-style enrichment
+  hasn't been confirmed to exist for the adjacent-company universe yet).

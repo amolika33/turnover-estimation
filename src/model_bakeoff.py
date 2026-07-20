@@ -94,8 +94,37 @@ LOG_NUMERIC_FEATURES = [
     "total_export_revenue",
     "assets_per_employee",
     "export_revenue_per_employee",
+    # Source 3 (grants/accelerator/funding enrichment): counts and
+    # monetary totals, same skewed-feature treatment as the rest of this
+    # list — see feature_engineering.py's Source 3 section.
+    "grants_count",
+    "grants_total_amount",
+    "fundraising_count",
+    "fundraising_total_amount",
 ]
-PLAIN_NUMERIC_FEATURES = ["year", "company_age_years"]
+PLAIN_NUMERIC_FEATURES = [
+    "year",
+    "company_age_years",
+    # Source 3: recency (years-since, same pattern as company_age_years)
+    # and small bounded counts/binary indicators — not log-transformed,
+    # range is too small (accelerator_count caps at 5; signals are 0/1) to
+    # benefit from it.
+    "grant_recency_years",
+    "fundraising_recency_years",
+    "accelerator_count",
+    "signal_equity_fundraising",
+    "signal_debt_fundraising",
+    "signal_mbo_mbi",
+    "signal_accelerator",
+    "signal_acquired",
+    "signal_made_acquisition",
+    "signal_ipo",
+    "signal_academic_spinout",
+    "signal_rd_grant",
+    "signal_patent",
+    "has_attended_accelerator",
+    "is_academic_spinout",
+]
 NUMERIC_FEATURES = PLAIN_NUMERIC_FEATURES + LOG_NUMERIC_FEATURES
 CATEGORICAL_FEATURES = [
     "employee_count_source",

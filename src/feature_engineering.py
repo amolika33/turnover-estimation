@@ -30,6 +30,7 @@ from src.sample_construction import ID_COLS, YEARS, construct_samples
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
+SOURCE3_PATH = REPO_ROOT / "data" / "raw" / "beauhurst_company_export_20260720-092535.csv.xlsx"
 
 STATIC_COLS = {
     "Founded": "founded_year",
@@ -43,6 +44,32 @@ STATIC_COLS = {
 # GeoData-Institute-style nulled CH numbers and shared-CH-number anomalies.
 MERGE_KEY = [COMPANY_ID_COL]
 IDENTITY_COLS = [COMPANY_ID_COL, NAME_COL, URL_COL, CH_COL]
+
+# Source 3 (grants/accelerator/funding enrichment, same 1,372-company
+# universe as Source 1, joined by Beauhurst URL — it has no CH number of
+# its own, so it can't be tagged with company_id directly; see
+# _source3_url_to_company_id). 13 boolean signal columns exist in the file
+# (not 14) — 10 are brought in directly; 3 are excluded, see
+# DROPPED_COLUMNS. "Innovation signals - Academic spinout" here is a
+# distinct boolean from the derived `is_academic_spinout` built from the
+# Academic Spinout Events date slots below — they agree on all but 0 of
+# 1,372 rows (fully redundant in this data) but are kept as separate
+# features per spec; harmless for the regularised models in the bake-off.
+SOURCE3_SAFE_BOOLEAN_SIGNALS = {
+    "Growth signals - Equity fundraising": "signal_equity_fundraising",
+    "Growth signals - Debt fundraising": "signal_debt_fundraising",
+    "Growth signals - MBO/MBI": "signal_mbo_mbi",
+    "Growth signals - Accelerator": "signal_accelerator",
+    "Growth signals - Acquired": "signal_acquired",
+    "Growth signals - Made acquisition": "signal_made_acquisition",
+    "Growth signals - IPO": "signal_ipo",
+    "Innovation signals - Academic spinout": "signal_academic_spinout",
+    "Innovation signals - R&D grant": "signal_rd_grant",
+    "Innovation signals - Patent": "signal_patent",
+}
+
+SOURCE3_ACCELERATOR_NAME_COLS = [f"Accelerator Attendances {i} - Accelerator Name" for i in range(1, 6)]
+SOURCE3_SPINOUT_NAME_COLS = [f"Academic Spinout Events {i} - Academic Institution Name" for i in range(1, 3)]
 
 # Columns considered and deliberately excluded, with reasons.
 DROPPED_COLUMNS = {
@@ -58,6 +85,11 @@ DROPPED_COLUMNS = {
     "Company Size / Size (Power BI) / Size (LinkedIn)": "static snapshots; superseded by the year-indexed `Size {year}` columns, which give a properly time-varying company_size per panel row instead",
     "SIC Code 2-4": "sparse (315/148/78 non-null out of 1,225) secondary/tertiary classifications — SIC Code 1 alone kept for this pass",
     "Filing Date (year)": "not built this pass — a filing-timeliness feature (e.g. lag vs. accounting year end) is a reasonable future financial indicator, not included yet",
+    "Growth signals - 10% scaleup / 20% scaleup": "ambiguous turnover-derivation risk (user decision): Beauhurst's own 'scaleup' methodology is typically based on the OECD high-growth-enterprise definition (>=10%/20% p.a. average growth in employees OR turnover over 3 years). Verified NOT a re-export of Source 2's own turnover-growth columns (only 14-17% agreement — different computation/time window), but can't be confirmed independent of turnover, so excluded per the project's absolute no-turnover-derivation rule.",
+    "Growth signals - High growth list": "same growth-classification ambiguity as the scaleup flags (~7-9% agreement with our own turnover/employee growth columns — still not confirmed independent of turnover).",
+    "IPO market capitalisations (converted to GBP)": "too sparse (19/1,372 non-null) and not clearly useful for this pass",
+    "Accelerator Attendances N - Accelerator Name / entry-exit dates": "raw free-text names not brought in as features; dates used internally only to derive has_attended_accelerator/accelerator_count, not exposed as raw date features",
+    "Academic Spinout Events N - Academic Institution Name / date": "same as accelerator names — used internally to derive is_academic_spinout only",
 }
 
 FEATURE_COLUMNS = [
@@ -73,6 +105,16 @@ FEATURE_COLUMNS = [
     "sic_code_1",
     "linkedin_industry",
     "value_stream",
+] + list(SOURCE3_SAFE_BOOLEAN_SIGNALS.values()) + [
+    "has_attended_accelerator",
+    "accelerator_count",
+    "is_academic_spinout",
+    "grants_count",
+    "grants_total_amount",
+    "grant_recency_years",
+    "fundraising_count",
+    "fundraising_total_amount",
+    "fundraising_recency_years",
 ]
 
 
@@ -83,6 +125,65 @@ def _melt_year_indexed(segmented_df: pd.DataFrame, prefix_fmt: str, out_col: str
     )
     long["year"] = long["_col"].map(cols)
     return long.drop(columns="_col")
+
+
+def _normalize_url(url):
+    if pd.isna(url):
+        return None
+    return str(url).strip().lower().rstrip("/")
+
+
+def load_source3(path: Path = SOURCE3_PATH) -> pd.DataFrame:
+    return pd.read_excel(path, sheet_name=0)
+
+
+def _clean_currency(series: pd.Series) -> pd.Series:
+    """Grants/Fundraisings amount columns mix real numbers with a literal
+    "(no value)" string sentinel, forcing object dtype — coerce to numeric,
+    treating the sentinel as missing rather than 0 (0 would misrepresent an
+    unknown amount as a confirmed zero)."""
+    return pd.to_numeric(series.replace("(no value)", pd.NA), errors="coerce")
+
+
+def build_source3_features(src3: pd.DataFrame) -> pd.DataFrame:
+    df = src3.copy()
+    out = pd.DataFrame({"_url_norm": df[URL_COL].apply(_normalize_url)})
+
+    for src_col, out_col in SOURCE3_SAFE_BOOLEAN_SIGNALS.items():
+        out[out_col] = df[src_col].astype(int)
+
+    out["has_attended_accelerator"] = df[SOURCE3_ACCELERATOR_NAME_COLS].notna().any(axis=1).astype(int)
+    out["accelerator_count"] = df[SOURCE3_ACCELERATOR_NAME_COLS].notna().sum(axis=1)
+    out["is_academic_spinout"] = df[SOURCE3_SPINOUT_NAME_COLS].notna().any(axis=1).astype(int)
+
+    out["grants_count"] = df["Grants - Number of grants received by the company"]
+    out["grants_total_amount"] = _clean_currency(
+        df["Grants - Total amount received by the company through grants (GBP)"]
+    )
+    out["_grants_latest_date"] = df["Grants - Date of the company's latest grant"]
+
+    out["fundraising_count"] = df["Fundraisings - Number of fundraisings completed by the company"]
+    out["fundraising_total_amount"] = _clean_currency(
+        df["Fundraisings - Total amount received by the company through fundraisings (GBP)"]
+    )
+    out["_fundraising_latest_date"] = df["Fundraisings - Date of the company's latest fundraising"]
+
+    return out
+
+
+def _source3_url_to_company_id(segmented_df: pd.DataFrame) -> pd.DataFrame:
+    """Source 3 has no CH number of its own, so it can't be tagged with
+    company_id directly — join by normalised Beauhurst URL instead, same
+    approach as the original Source1/Source2 join (DATA_SCHEMA.md). Known
+    limitation: segmented_df has 6 rows where two different company_ids
+    share the same Beauhurst URL (the shared-CH-number-anomaly cases) —
+    drop_duplicates here means one of those company_ids silently gets no
+    Source 3 features rather than both getting the same (possibly wrong)
+    ones. Affects at most 6 companies; not resolved further this pass."""
+    lookup = segmented_df[[URL_COL, COMPANY_ID_COL]].copy()
+    lookup["_url_norm"] = lookup[URL_COL].apply(_normalize_url)
+    lookup = lookup.dropna(subset=["_url_norm"]).drop_duplicates(subset="_url_norm")
+    return lookup[["_url_norm", COMPANY_ID_COL]]
 
 
 def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -112,6 +213,25 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
     age_log["reason"] = "negative_company_age: turnover recorded in a year before Founded"
     age_log = age_log.rename(columns={"company_age_years": "original_company_age_years"})
     df.loc[is_age_anomaly, "company_age_years"] = np.nan
+
+    src3 = load_source3()
+    src3_features = build_source3_features(src3)
+    url_lookup = _source3_url_to_company_id(segmented_df)
+    src3_features = src3_features.merge(url_lookup, on="_url_norm", how="inner").drop(columns="_url_norm")
+    df = df.merge(src3_features, on=COMPANY_ID_COL, how="left")
+
+    # Recency relative to each panel row's year, same pattern as
+    # company_age_years — but unlike founded_year (a true static fact),
+    # "latest grant/fundraising date" is a cumulative-to-export-date
+    # snapshot: a grant received in 2023 shouldn't appear "recent" (or
+    # exist at all) for a company's 2015 panel row. Rather than emit a
+    # negative recency (which would leak that a future grant is coming),
+    # null it out for any row whose year predates the latest event.
+    df["grant_recency_years"] = df["year"] - df["_grants_latest_date"].dt.year
+    df.loc[df["grant_recency_years"] < 0, "grant_recency_years"] = np.nan
+    df["fundraising_recency_years"] = df["year"] - df["_fundraising_latest_date"].dt.year
+    df.loc[df["fundraising_recency_years"] < 0, "fundraising_recency_years"] = np.nan
+    df = df.drop(columns=["_grants_latest_date", "_fundraising_latest_date"])
 
     return df, age_log
 
