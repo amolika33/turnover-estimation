@@ -581,6 +581,36 @@ Separate pipeline stage, built on the completed dataset above — see
    company-year steps were downgraded by the evidence gate. Model usage
    across all steps: Persistence 6,785, Company Historical CAGR 900,
    Ridge 100.
+
+   **Growth-rate decay — the fix for the 6 remaining Group-A outliers**:
+   every "growing"-routed prediction (CAGR formula or Ridge regression,
+   both through the same `apply_growth_decay` path) is converted to an
+   implied one-year log-growth rate and blended toward that mission's
+   real-data MEDIAN log_growth_1y (`compute_mission_average_growth` — median
+   over mean, deliberately, for the same small-base-distortion reason
+   documented throughout this section), with blend weight
+   `0.5 ** (step / GROWTH_DECAY_HALF_LIFE_STEPS)`, `HALF_LIFE_STEPS = 2.0`
+   (~71% company-rate at step 1, 50% at step 2, ~18% at step 5, ~9% at
+   step 7 — "mostly company early, mostly mission average by step 5+", per
+   the brief; exponential rather than linear decay-to-zero so a company's
+   own evidence never gets fully discounted no matter how far out the
+   projection runs). Persistence is untouched — it has no rate to decay.
+   **Result: dramatic improvement.** Max 2030-vs-baseline multiple fell
+   from 230,151x to **22.7x**; >100x companies: 6 → **0**; >1000x: 4 → 0;
+   >10x: 29 → 1 (SaxaVord Spaceport itself, now a plausible 22.7x with
+   visibly decelerating year-over-year growth: 2.35x→1.55x→1.29x→1.14x→
+   1.08x→1.06x). All 6 originally-traced outliers re-checked individually
+   and now land at credible multiples (SaxaVord 22.7x, Eutelsat OneWeb
+   8.8x, Infleqtion 5.2x, Oxa 4.4x, Sierra Nevada Corp 4.4x, Map of
+   Agriculture 4.7x) with visibly decelerating trajectories, not runaway
+   compounding. Air Liquide/AXA XL re-verified unaffected in shape (still
+   one growth step then reverting to stable), values shifted only
+   slightly from the decay blend. Side effect, expected not a bug:
+   decayed predictions feed back into later steps' own growth signals, so
+   classification flips rose from 75 to 180/1,222 (14.7%) and model usage
+   shifted toward more Persistence (7,098 vs 6,785) — decay naturally
+   cools a company's measured rate faster, so more companies settle into
+   "stable" sooner than under undamped compounding.
 8. `forecast_assemble.py` — combine into final company-level 2030
    trajectories.
 9. `forecast_reporting.py` — **added to the plan, not yet built**.

@@ -111,6 +111,44 @@ produce non-credible 2030 values and what (if anything) further mitigation
 would look like. The gate targets thin EVIDENCE specifically, not
 extreme RATE MAGNITUDE — those are different failure modes and this fix
 only addresses the first.
+
+GROWTH-RATE DECAY (added after the gate turned out to be a partial fix —
+6 companies remained >100x baseline, ALL evidence Group A: SaxaVord
+Spaceport, Infleqtion, Map of Agriculture, Eutelsat OneWeb, Sierra Nevada
+Corporation, Oxa — genuinely evidence-backed small-base, high-volatility
+companies the gate isn't designed to catch). The remaining root cause: a
+trend-continuation model's applied rate never decelerates under pure
+recursion regardless of how much real evidence backed it, because the
+realized growth between two model-PREDICTED years always exactly equals
+whatever rate produced them — there's no mechanism pulling an extreme
+company-specific rate back toward anything more moderate as the projection
+gets further from real data.
+
+Fix: every "growing"-routed prediction (CAGR's formula output or Ridge's
+regression output — both go through the same path, apply_growth_decay,
+so neither needs separate handling) is converted to an implied one-year
+log-growth rate and blended toward that MISSION's real-data median
+log_growth_1y (compute_mission_average_growth — median, not mean,
+deliberately: this project has repeatedly shown small-base companies can
+produce extreme one-off values, exactly what a mean would be distorted by
+and exactly what decay is trying to pull companies away from), with a
+blend weight that shrinks by recursive STEP (not calendar year, since what
+matters is distance from real evidence, not the calendar):
+
+  weight_company(step) = 0.5 ** (step / GROWTH_DECAY_HALF_LIFE_STEPS),
+  HALF_LIFE_STEPS = 2.0 -> ~0.71 at step 1 (mostly the company's own
+  rate), 0.5 at step 2, ~0.18 at step 5, ~0.09 at step 7 (mostly mission
+  average) — matches "mostly-company-rate at step 1, mostly-mission-
+  average by step 5+" from the brief. Exponential/half-life over linear
+  decay-to-zero: never fully reaches 0, so a company's own evidence always
+  retains SOME influence no matter how far out the projection runs, rather
+  than assuming every company's trajectory becomes indistinguishable from
+  the mission average given enough time (a stronger, less defensible
+  claim than "regress toward the mission, don't ignore the company").
+
+Persistence is untouched by decay — it has no rate to decay (it already
+represents "no growth"), and decay is specifically about tempering a
+trend-continuation model's rate, not a second growth mechanism of its own.
 """
 from pathlib import Path
 
@@ -153,6 +191,19 @@ EVIDENCE_GROUPS_PATH = DATA_DIR / "forecast_evidence_groups.csv"
 MIN_EVIDENCE_GROUP_FOR_TREND_CONTINUATION = "A"
 MISSIONS_NEEDING_FITTED_ROUTING_MODEL = ["ACE"]  # only Ridge (ACE) needs an actual fit; CAGR/Persistence are formulas
 
+# GROWTH-RATE DECAY (added after the evidence gate turned out to be a
+# partial fix — see module docstring's "GROWTH-RATE DECAY" section):
+# half-life in RECURSIVE STEPS, not calendar years, since decay must track
+# each company's own distance from real evidence, not the calendar. weight
+# = 0.5 ** (step / HALF_LIFE): ~0.71 at step 1 (mostly the company's own
+# rate), 0.5 at step 2, ~0.18 at step 5, ~0.09 at step 7 (mostly mission
+# average) — matches the brief's "mostly-company at step 1, mostly-
+# mission-average by step 5+" without a hard cutoff (never reaches exactly
+# 0, unlike a linear schedule — some company-specific signal always
+# remains, which is more defensible than assuming every company reverts
+# fully to the mission mean given enough time).
+GROWTH_DECAY_HALF_LIFE_STEPS = 2.0
+
 STATIC_COLS = {"Founded": "founded_year", "SIC Code 1": "sic_code_1", "Value Stream": "value_stream"}
 
 
@@ -163,6 +214,35 @@ def classify_growth(row: pd.Series) -> str:
     if pd.isna(signal):
         return "stable"
     return "growing" if signal > GROWTH_THRESHOLD else "stable"
+
+
+def compute_mission_average_growth(real_panel: pd.DataFrame, baseline: pd.DataFrame) -> dict:
+    """MEDIAN (not mean) log_growth_1y per mission, computed ONCE from the
+    REAL, pre-recursion historical panel only — a stable anchor to decay
+    toward, unaffected by the recursion's own synthetic predictions. Median
+    over mean is deliberate: this project has already shown small-base
+    companies can produce extreme one-off growth values (Earth-i's 394x
+    jump, the 6 remaining outlier companies here) that would badly distort
+    a mean — the whole point of this anchor is to be a level-headed
+    reference point uncontaminated by exactly the kind of extreme value
+    decay is meant to pull companies away from."""
+    engineered, _ = build_engineered_panel(real_panel, baseline)
+    return engineered.groupby("mission")["log_growth_1y"].median().to_dict()
+
+
+def apply_growth_decay(
+    turnover_t: np.ndarray, raw_predicted_turnover: np.ndarray, step: int, mission_avg_growth_rate: float
+) -> np.ndarray:
+    """Converts a trend-continuation model's raw prediction (CAGR's formula
+    output or Ridge's regression output — both go through this same path,
+    so both get decayed identically rather than needing separate logic) to
+    an implied one-year log-growth rate, blends it toward the mission's
+    real-data median rate by `step`'s decay weight, then reconstructs the
+    final turnover from the blended rate."""
+    implied_rate = np.log1p(raw_predicted_turnover) - np.log1p(turnover_t)
+    weight_company = 0.5 ** (step / GROWTH_DECAY_HALF_LIFE_STEPS)
+    blended_rate = weight_company * implied_rate + (1 - weight_company) * mission_avg_growth_rate
+    return np.expm1(np.log1p(turnover_t) + blended_rate)
 
 
 def fit_growth_routing_models() -> dict:
@@ -221,7 +301,12 @@ def load_evidence_groups() -> pd.Series:
 
 
 def predict_step(
-    engineered: pd.DataFrame, origin_keys: pd.DataFrame, routing_models: dict, evidence_groups: pd.Series
+    engineered: pd.DataFrame,
+    origin_keys: pd.DataFrame,
+    routing_models: dict,
+    evidence_groups: pd.Series,
+    step: int,
+    mission_avg_growth: dict,
 ) -> pd.DataFrame:
     """`origin_keys` is one row per active company: (company_id, accounting_year)
     of the row to predict FROM. Returns the new (company_id, next_year,
@@ -233,7 +318,13 @@ def predict_step(
     columns — a company can show growth_signal="growing" but still get
     routed to Persistence if its evidence_group is below the minimum (see
     module docstring's "MINIMUM-EVIDENCE GATE" section), and that
-    distinction needs to stay visible, not collapsed into one label."""
+    distinction needs to stay visible, not collapsed into one label.
+
+    The "growing" branch's raw model output (CAGR formula or Ridge
+    regression) is passed through apply_growth_decay before being used —
+    Persistence is untouched, since decay is specifically about a
+    trend-continuation model's applied RATE, and Persistence has no rate
+    to decay (it's already "no growth")."""
     origin = engineered.merge(origin_keys, on=["company_id", "accounting_year"], how="inner")
     origin["growth_signal"] = origin.apply(classify_growth, axis=1)
     origin["evidence_group"] = origin["company_id"].map(evidence_groups).fillna("D")
@@ -252,10 +343,12 @@ def predict_step(
             continue
         subset = origin_cast[is_growing_this_mission]
         if mission in routing_models:
-            preds = routing_models[mission].predict(subset[FEATURE_COLUMNS])
+            raw_preds = routing_models[mission].predict(subset[FEATURE_COLUMNS])
         else:
-            preds = BENCHMARK_PREDICT_FNS[growth_model_name](pd.DataFrame(), subset)
-        predictions[is_growing_this_mission.to_numpy()] = preds
+            raw_preds = BENCHMARK_PREDICT_FNS[growth_model_name](pd.DataFrame(), subset)
+        turnover_t = origin.loc[is_growing_this_mission, "turnover_t"].to_numpy()
+        decayed_preds = apply_growth_decay(turnover_t, raw_preds, step, mission_avg_growth[mission])
+        predictions[is_growing_this_mission.to_numpy()] = decayed_preds
 
     is_stable = origin["growth_classification"] == "stable"
     if is_stable.any():
@@ -282,6 +375,13 @@ def predict_step(
 
 
 def run_recursive_forecast(panel: pd.DataFrame, baseline: pd.DataFrame, routing_models: dict) -> pd.DataFrame:
+    # Mission-average growth anchor computed ONCE, from the real (pre-seed,
+    # pre-recursion) panel only — must not be recomputed each step, or it
+    # would itself get contaminated by the recursion's own synthetic
+    # predictions, defeating the point of a stable decay target.
+    mission_avg_growth = compute_mission_average_growth(panel, baseline)
+    print(f"Mission-average (median) log_growth_1y, decay anchor: {mission_avg_growth}")
+
     panel = seed_missing_companies(panel, baseline)
     evidence_groups = load_evidence_groups()
 
@@ -297,7 +397,7 @@ def run_recursive_forecast(panel: pd.DataFrame, baseline: pd.DataFrame, routing_
         )
 
         engineered, _ = build_engineered_panel(panel, baseline)
-        new_rows = predict_step(engineered, origin_keys, routing_models, evidence_groups)
+        new_rows = predict_step(engineered, origin_keys, routing_models, evidence_groups, step, mission_avg_growth)
 
         valid_mask = new_rows["turnover"].notna()
         n_invalid = int((~valid_mask).sum())
