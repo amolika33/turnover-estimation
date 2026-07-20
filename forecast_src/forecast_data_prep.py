@@ -258,6 +258,34 @@ def check_years(df: pd.DataFrame, col: str) -> tuple[pd.DataFrame, pd.DataFrame]
     return df[valid_mask].copy(), log
 
 
+PLAUSIBLE_EMPLOYEES_MAX = 500_000
+# Not a sec 3 check (methodology doesn't cover employees) — found while
+# building forecast_feature_engineering.py: employee_growth's log-difference
+# construction (log1p(employees_t) - log1p(employees_lag1)) is unbounded
+# below when a single garbage upstream value inflates employees_lag1 —
+# unlike the simple-ratio version it replaced, which was floored at -1.0
+# regardless of how bad the prior value was. The bound is set well above
+# BAE Systems' ~97,000 (the largest genuinely FILED employee count anywhere
+# in this dataset) — the only 3 rows it catches (GMV 2013: 39,187,246;
+# Added Value Solutions 2016/2017: 630,431 twice) are all
+# employee_count_source="estimated", never "filed", consistent with this
+# being a Beauhurst estimation-algorithm failure, not a real company.
+
+
+def check_plausible_employees(df: pd.DataFrame, col: str = "employees") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Nulls (never drops the row) an employees value that exceeds
+    PLAUSIBLE_EMPLOYEES_MAX — same null-and-log shape as check_turnover,
+    for a value that's implausible rather than structurally invalid."""
+    if col not in df.columns:
+        return df, df.iloc[0:0].copy()
+    is_implausible = df[col].notna() & (df[col] > PLAUSIBLE_EMPLOYEES_MAX)
+    cleaned = df.copy()
+    cleaned.loc[is_implausible, col] = np.nan
+    log = df[is_implausible].copy()
+    log["exclusion_reason"] = "employees_exceeds_plausible_max"
+    return cleaned, log
+
+
 def check_mission(df: pd.DataFrame, col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Sec 3.5: mission must resolve (case-insensitively) to one of the 4
     valid values. Rows that don't (including a genuinely null mission, e.g.
@@ -333,6 +361,8 @@ def validate_historical_panel(path: Path = HISTORICAL_PANEL_PATH) -> tuple[pd.Da
     logs.append(log.assign(check="duplicate_company_year"))
     df, log = check_turnover(df, "turnover")
     logs.append(log.assign(check="turnover"))
+    df, log = check_plausible_employees(df)
+    logs.append(log.assign(check="employees"))
     df, log = check_years(df, "accounting_year")
     logs.append(log.assign(check="accounting_year"))
     df, log = check_mission(df, "mission")

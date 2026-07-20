@@ -167,7 +167,22 @@ def add_derived_financial_features(panel: pd.DataFrame) -> pd.DataFrame:
     columns) — see MISSING_COMPANY_FIELDS. export_share is defined as
     export_revenue / turnover (fraction of turnover from exports) — the
     spec doesn't give a formula, this is the only interpretation that
-    doesn't need a field we don't have."""
+    doesn't need a field we don't have.
+
+    employee_growth/asset_growth: REVISED from the originally-committed
+    simple percentage-growth formula ((X_t - X_lag1) / X_lag1) to a
+    log-difference, matching log_growth_1y's construction exactly
+    (log1p(X_t) - log1p(X_lag1)). Reason: the simple-ratio version measured
+    skew 28.25 (employee_growth) / 55.79 (asset_growth) against real
+    training data — worse than the raw turnover features (skew 9-17) that
+    caused the estimation pipeline's BT/BAE Systems instability, and not
+    covered by log_growth_1y's fix since it's a different quantity. The
+    log-difference form is the proven fix (log_growth_1y itself measures
+    skew ~-0.02 this same way) and is mechanically safe here: employees and
+    total_assets are both checked non-negative below (same guard as
+    add_log_features), so log1p is always valid on the levels, and a
+    log-difference of two valid log1p values can't hit the x <= -1 problem
+    a second log1p pass on a growth RATIO could."""
     df = panel.copy()
 
     def safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
@@ -180,11 +195,19 @@ def add_derived_financial_features(panel: pd.DataFrame) -> pd.DataFrame:
     df["assets_per_employee"] = safe_ratio(df["total_assets"], df["employees"])
     df["export_share"] = safe_ratio(df["export_revenue"], df["turnover"])
 
+    for col in ["employees", "total_assets"]:
+        negative = df[col].notna() & (df[col] < 0)
+        if negative.any():
+            raise ValueError(
+                f"{negative.sum()} negative values in {col} — employee_growth/asset_growth's "
+                "log1p construction assumes non-negative levels; investigate before proceeding."
+            )
+
     grouped = df.groupby("company_id")
     employees_lag1 = grouped["employees"].shift(1)
     assets_lag1 = grouped["total_assets"].shift(1)
-    df["employee_growth"] = safe_ratio(df["employees"] - employees_lag1, employees_lag1)
-    df["asset_growth"] = safe_ratio(df["total_assets"] - assets_lag1, assets_lag1)
+    df["employee_growth"] = np.log1p(df["employees"]) - np.log1p(employees_lag1)
+    df["asset_growth"] = np.log1p(df["total_assets"]) - np.log1p(assets_lag1)
 
     return df
 

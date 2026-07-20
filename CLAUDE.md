@@ -442,16 +442,33 @@ Separate pipeline stage, built on the completed dataset above — see
    down to -6.06). `log_growth_3y_mean`/`growth_volatility` are more mildly
    skewed (2.10/4.43) — left untransformed for now, flagged as a secondary
    watch item if bake-off fold variance looks unstable for them.
-   **Separately identified, not yet resolved**: `employee_growth`/
-   `asset_growth` (sec 7.7's simple, non-log growth ratios) are far *more*
+   **`employee_growth`/`asset_growth` — identified and resolved**: sec
+   7.7's original simple, non-log growth-ratio formula measured far more
    skewed than raw turnover (28.25/55.79, `asset_growth` max = 2,553 —
    255,300% in one year) — a real BT/BAE-shaped risk of their own, not
-   covered by the log_growth_1y fix since they're a different construction.
-   Needs a decision before `forecast_bakeoff.py` is built: reformulate as a
-   log-difference (`log1p(X_t) - log1p(X_lag1)`, matching log_growth_1y's
-   proven-symmetric construction) or a signed-log transform
-   (`sign(x) * log1p(|x|)`, safe here since both ratios are bounded below
-   at -1).
+   covered by the log_growth_1y fix since it was a different construction.
+   `forecast_feature_engineering.py`'s `add_derived_financial_features` was
+   revised to a log-difference (`log1p(X_t) - log1p(X_lag1)`), matching
+   log_growth_1y's proven-symmetric construction exactly. Re-measuring
+   after the change surfaced a SECOND, independent problem the reformulation
+   itself exposed: log-differences are unbounded below (unlike the old
+   simple ratio, floored at -1.0 no matter how bad the prior value), so 3
+   rows with an implausible upstream `employees` estimate (GMV 2013:
+   39,187,246; Added Value Solutions 2016/2017: 630,431 twice — all
+   `employee_count_source="estimated"`, never "filed"; the largest
+   genuinely filed value anywhere in the dataset is BAE Systems' ~97,000)
+   were blowing up `employee_growth` to -13.6 in log-difference space.
+   Fixed with a new `forecast_data_prep.py` check,
+   `check_plausible_employees` (`PLAUSIBLE_EMPLOYEES_MAX = 500,000`,
+   comfortably above BAE Systems' real max) — nulls the 3 implausible
+   values (never drops the row), same null-and-log shape as `check_turnover`.
+   Final skew after both fixes: `employee_growth` 28.25 → **-2.80**,
+   `asset_growth` 55.79 → **3.07** — both now in the same moderate range as
+   `log_growth_3y_mean`/`growth_volatility` (2-4), no further transform
+   planned. (One remaining outlier double-checked and confirmed genuine,
+   not a data error: Cobham's filed employee count really did drop from
+   10,185 to 51 in 2020, consistent with its real Advent International
+   breakup/restructuring that year.)
 6. `forecast_selection.py` — select the strongest model per mission from
    the bake-off results.
 7. `forecast_recursive.py` — apply the selected one-year-ahead model
