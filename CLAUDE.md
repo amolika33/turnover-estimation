@@ -399,3 +399,92 @@ list is the third leg, not the only place it's written down.
   predictions, and reporting artifacts re-run against the reduced feature
   set; see `model_performance_summary.csv` for the resulting per-mission
   metrics.
+
+## 2030 Forecasting Pipeline (`forecast_src/`) — build order
+
+Separate pipeline stage, built on the completed dataset above — see
+`FORECASTING_METHODOLOGY.md` for the full verbatim spec. Kept in its own
+`forecast_src/` package, never mixed into `src/`.
+
+1. ✅ `forecast_data_prep.py` — validates the completed baseline + historical
+   company-year panel (methodology sec 2-3); also owns two exclusion
+   policies layered on top of the written spec, both documented in their
+   own module: `mission_segmentation.py`'s `KNOWN_MISCATEGORIZED_COMPANIES`
+   (sector-mismatch exclusions, e.g. Volante Global — an insurance/
+   reinsurance group, not a space company, despite sitting in the space-
+   capabilities catalogue) and `forecast_data_prep.py`'s company-wide
+   invalid-turnover-history exclusion (any negative/non-finite/non-numeric
+   turnover anywhere in a company's history removes that company from the
+   forecasting pipeline entirely, not just the offending row — e.g. Price
+   Forbes, excluded despite 10 otherwise-clean years).
+2. ✅ `forecast_panel_construction.py` — ordered per-company time series +
+   history-quality properties (sec 4).
+3. ✅ `forecast_sample_construction.py` — one-year-ahead training rows via
+   shift-based target construction (sec 5) + evidence groups A-D (sec 6).
+4. ✅ `forecast_feature_engineering.py` — lag/log/growth/rolling/history-
+   quality/company/derived-financial/data-quality features (sec 7.1-7.8).
+5. `forecast_bakeoff.py` — 13-candidate model comparison, rolling-origin
+   temporal validation (not grouped k-fold — panel data here is
+   chronological, not just company-grouped), per-horizon reporting.
+   **Numeric-stability carryover from the estimation pipeline's BT/BAE
+   Systems lesson, checked empirically before this module is built**: raw
+   turnover-scale features (`target_turnover_next_year`,
+   `turnover_lag_1/2/3`, `rolling_turnover_mean_2/3`,
+   `rolling_turnover_median_3`, `historical_turnover_max/min`,
+   `total_assets`, `assets_per_employee`) all show skew 9-17 — the same
+   shape as the original BT/BAE-driven instability — and need the same
+   fix: `TransformedTargetRegressor(log1p/expm1)` on the target, log1p on
+   this module's `LOG_NUMERIC_FEATURES`-equivalent list. `log_growth_1y`
+   itself needs no further transform (skew ≈ -0.02, already effectively
+   symmetric — it's a log-difference, so a 394x raw multiplicative jump
+   becomes a bounded 5.98 additive value; a second log1p pass would also be
+   mechanically invalid, since log1p requires x > -1 and log_growth_1y goes
+   down to -6.06). `log_growth_3y_mean`/`growth_volatility` are more mildly
+   skewed (2.10/4.43) — left untransformed for now, flagged as a secondary
+   watch item if bake-off fold variance looks unstable for them.
+   **Separately identified, not yet resolved**: `employee_growth`/
+   `asset_growth` (sec 7.7's simple, non-log growth ratios) are far *more*
+   skewed than raw turnover (28.25/55.79, `asset_growth` max = 2,553 —
+   255,300% in one year) — a real BT/BAE-shaped risk of their own, not
+   covered by the log_growth_1y fix since they're a different construction.
+   Needs a decision before `forecast_bakeoff.py` is built: reformulate as a
+   log-difference (`log1p(X_t) - log1p(X_lag1)`, matching log_growth_1y's
+   proven-symmetric construction) or a signed-log transform
+   (`sign(x) * log1p(|x|)`, safe here since both ratios are bounded below
+   at -1).
+6. `forecast_selection.py` — select the strongest model per mission from
+   the bake-off results.
+7. `forecast_recursive.py` — apply the selected one-year-ahead model
+   recursively from each company's baseline year out to 2030.
+8. `forecast_assemble.py` — combine into final company-level 2030
+   trajectories.
+9. `forecast_reporting.py` — **added to the plan, not yet built**.
+   Business-facing outputs once 2030 trajectories exist from step 8:
+   - **£10M-by-2030 companies**: filtered from the main forecast — companies
+     currently under £10M turnover whose predicted 2030 turnover crosses
+     £10M (i.e. the crossing must happen *from below*; already-above-£10M
+     companies don't count here) — this is the project's core stated
+     objective.
+   - **Gazelle/high-growth companies**: two tiers, not one fixed threshold —
+     companies sustaining ≥10% YoY growth, and companies sustaining ≥20%
+     YoY growth, each independently reported so the tiers can be compared.
+     **Decided**: both tiers require **3 consecutive years** of sustained
+     growth at that threshold — the OECD's standard "high-growth
+     enterprise" definition (same underlying concept as the Beauhurst
+     10%/20% scaleup flags excluded from `feature_engineering.py` for
+     leakage reasons — see `DROPPED_COLUMNS` — but computed independently
+     here from this project's own forecast/growth features, not borrowed
+     from Beauhurst's version, so the leakage concern doesn't apply to this
+     output). A stated assumption, not a hardcoded silent default — will
+     live as a named constant (e.g. `GAZELLE_CONSECUTIVE_YEARS = 3`) in
+     `forecast_reporting.py` once built, with this same reasoning repeated
+     as a code comment there.
+   - **Intersection output**: companies meeting the high-growth criteria
+     (either tier) AND predicted to reach ≥£50M by 2030.
+   - **Reliability/evidence-group carry-through, required for all three**:
+     none of these outputs are presented as equally trustworthy regardless
+     of evidence quality — a gazelle candidate built on Group D (estimated
+     baseline, zero observed turnover history) must visibly carry weaker
+     confidence than one built on Group A (3+ observed years), via the same
+     `forecast_evidence_group` / reliability columns the main forecast
+     already carries, not a separate ad hoc confidence score.
