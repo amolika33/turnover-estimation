@@ -79,6 +79,9 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
    prefer simpler model on ties); refit on full labelled data for that mission.
 7. `predict.py` — apply selected mission models to each mission's inference
    population; attach reliability/out-of-distribution indicators.
+   **Prediction year is per-company, not "today" or a fixed year** — see
+   "Prediction year assignment" in "Documented assumptions and thresholds"
+   below.
 8. `assemble.py` — recombine observed + predicted turnover across all three
    missions (+ cross-cutting passthrough) into the final completed dataset.
 
@@ -139,14 +142,16 @@ engineering can be finalised.
 - **Source 3**: `beauhurst_company_export_20260720-092535.csv.xlsx` —
   grants/accelerator/funding enrichment for Source 1's company universe
   (same 1,372 rows), joined into the pipeline by Beauhurst URL. Added
-  `feature_engineering.py` features: 10 boolean commercial/growth signals
+  `feature_engineering.py` features: 8 boolean commercial/growth signals
   (`signal_equity_fundraising`, `signal_debt_fundraising`, `signal_mbo_mbi`,
-  `signal_accelerator`, `signal_acquired`, `signal_made_acquisition`,
-  `signal_ipo`, `signal_academic_spinout`, `signal_rd_grant`,
-  `signal_patent`), `has_attended_accelerator` / `accelerator_count` /
-  `is_academic_spinout` (derived from event-slot columns, not the raw
-  names/dates themselves), and `grants_count` / `grants_total_amount` /
-  `grant_recency_years` + the fundraising equivalents (recency computed
+  `signal_acquired`, `signal_made_acquisition`, `signal_ipo`,
+  `signal_rd_grant`, `signal_patent` — `Growth signals - Accelerator` and
+  `Innovation signals - Academic spinout` were dropped as ~100% redundant
+  with the derived features below), `has_attended_accelerator` /
+  `accelerator_count` / `is_academic_spinout` (derived from event-slot
+  columns, not the raw names/dates themselves), and `grants_count` /
+  `grants_total_amount` / `grant_recency_years` + the fundraising equivalents
+  (recency computed
   relative to each panel row's year, nulled rather than negative when the
   event postdates that row — see `feature_engineering.py`'s `add_features`
   comment). 3 boolean signals (the two "scaleup" flags and "High growth
@@ -282,6 +287,30 @@ list is the third leg, not the only place it's written down.
   `log1p_negative_values_{mission}.csv` rather than passed through. None
   found in the current Source 2 data — this is future-proofing for
   adjacent/refreshed data.
+- **Prediction year assignment** (`predict.build_covariate_snapshot`) — a
+  direct answer, since it determines what "the predicted turnover" actually
+  represents: it is **neither** today's date **nor** a single fixed year
+  shared across all companies. For each inference company, it's the most
+  recent year (within `sample_construction.YEARS`, 2013-2025) that has
+  *any* covariate populated (Total Employees CH/Est, Balance Sheet Total
+  Assets, Total Export Revenue, or Size) — i.e. that company's own latest
+  real financial snapshot, whatever year that happens to be. A company
+  whose last real data point was 2022 gets `year=2022` and its prediction
+  represents an estimate of 2022 turnover, not current/2026 turnover, even
+  though it sits alongside a company predicted for `year=2025`. Companies
+  with **zero** covariate data in any year (no real snapshot to anchor to
+  at all) fall back to `year=max(YEARS)=2025` — never 2026, since 2026's
+  columns are ~100% empty in Source 2 (confirmed this session) — with
+  every numeric feature left null for the pipeline's imputer to fill in.
+  Both facts are in the output data, not just here: every predicted row
+  carries `prediction_year` (the year used) and `is_fallback_year` (True =
+  pure imputation, no real snapshot). Current distribution (Beyond Earth +
+  Resilient Earth combined, 437 predictions): year 2022 (3), 2023 (51),
+  2024 (257), 2025 (126); 27 of 437 (6.2%) are `is_fallback_year=True`.
+  `company_age_years` and the grant/fundraising recency features are
+  computed relative to this same per-company `year`, so they inherit the
+  same "as of that company's own latest snapshot" framing, not "as of
+  today."
 - **Model usability threshold** (`model_selection.USABILITY_R2_THRESHOLD =
   0.0`): a selected model is only usable for prediction if it beats
   predicting the mission's own mean turnover (`R2_mean > 0`). This is what

@@ -79,7 +79,12 @@ Excluded per user decision, consistent with the project's absolute
 no-turnover-derivation rule. See `feature_engineering.py`'s
 `DROPPED_COLUMNS` for the full reasoning, and the 10 booleans that were
 confirmed safe (fundraising/M&A/accelerator/patent-type events — none
-turnover-related).
+turnover-related). Of those 10, 2 (`Growth signals - Accelerator`,
+`Innovation signals - Academic spinout`) were subsequently dropped too —
+not for leakage, but because they're ~100% redundant with the derived
+`has_attended_accelerator`/`is_academic_spinout` features (1 disagreement
+out of 1,372 rows / 0 disagreements respectively) — leaving **8** direct
+boolean signals in the final feature set.
 
 ## Resolved decisions
 

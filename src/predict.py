@@ -17,7 +17,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.feature_engineering import IDENTITY_COLS, MERGE_KEY, STATIC_COLS, _melt_year_indexed
+from src.feature_engineering import IDENTITY_COLS, MERGE_KEY, STATIC_COLS, _melt_year_indexed, merge_source3_features
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
 from src.model_bakeoff import (
     CATEGORICAL_FEATURES,
@@ -112,6 +112,8 @@ def add_prediction_features(snapshot: pd.DataFrame, segmented_df: pd.DataFrame) 
         df["export_revenue_per_employee"] = df["total_export_revenue"] / df["total_employees"]
     df["assets_per_employee"] = df["assets_per_employee"].replace([np.inf, -np.inf], np.nan)
     df["export_revenue_per_employee"] = df["export_revenue_per_employee"].replace([np.inf, -np.inf], np.nan)
+
+    df = merge_source3_features(df, segmented_df)
 
     return df
 

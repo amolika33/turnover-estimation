@@ -49,21 +49,21 @@ IDENTITY_COLS = [COMPANY_ID_COL, NAME_COL, URL_COL, CH_COL]
 # universe as Source 1, joined by Beauhurst URL — it has no CH number of
 # its own, so it can't be tagged with company_id directly; see
 # _source3_url_to_company_id). 13 boolean signal columns exist in the file
-# (not 14) — 10 are brought in directly; 3 are excluded, see
-# DROPPED_COLUMNS. "Innovation signals - Academic spinout" here is a
-# distinct boolean from the derived `is_academic_spinout` built from the
-# Academic Spinout Events date slots below — they agree on all but 0 of
-# 1,372 rows (fully redundant in this data) but are kept as separate
-# features per spec; harmless for the regularised models in the bake-off.
+# (not 14) — 8 are brought in directly; 5 are excluded, see
+# DROPPED_COLUMNS. "Growth signals - Accelerator" and "Innovation signals -
+# Academic spinout" were dropped from here specifically because they're
+# ~100% redundant with the derived has_attended_accelerator/
+# is_academic_spinout below (1 disagreement out of 1,372 rows for
+# accelerator, 0 for spinout) — the derived versions are kept since
+# they're clearer to explain (built from an explicit date/name slot, not
+# an opaque platform flag).
 SOURCE3_SAFE_BOOLEAN_SIGNALS = {
     "Growth signals - Equity fundraising": "signal_equity_fundraising",
     "Growth signals - Debt fundraising": "signal_debt_fundraising",
     "Growth signals - MBO/MBI": "signal_mbo_mbi",
-    "Growth signals - Accelerator": "signal_accelerator",
     "Growth signals - Acquired": "signal_acquired",
     "Growth signals - Made acquisition": "signal_made_acquisition",
     "Growth signals - IPO": "signal_ipo",
-    "Innovation signals - Academic spinout": "signal_academic_spinout",
     "Innovation signals - R&D grant": "signal_rd_grant",
     "Innovation signals - Patent": "signal_patent",
 }
@@ -90,6 +90,8 @@ DROPPED_COLUMNS = {
     "IPO market capitalisations (converted to GBP)": "too sparse (19/1,372 non-null) and not clearly useful for this pass",
     "Accelerator Attendances N - Accelerator Name / entry-exit dates": "raw free-text names not brought in as features; dates used internally only to derive has_attended_accelerator/accelerator_count, not exposed as raw date features",
     "Academic Spinout Events N - Academic Institution Name / date": "same as accelerator names — used internally to derive is_academic_spinout only",
+    "Growth signals - Accelerator": "~100% redundant with derived has_attended_accelerator (1 disagreement out of 1,372 rows) — kept the derived version, it's clearer to explain (built from an explicit date/name slot, not an opaque platform flag)",
+    "Innovation signals - Academic spinout": "~100% redundant with derived is_academic_spinout (0 disagreements out of 1,372 rows) — same reasoning as Growth signals - Accelerator",
 }
 
 FEATURE_COLUMNS = [
@@ -186,6 +188,32 @@ def _source3_url_to_company_id(segmented_df: pd.DataFrame) -> pd.DataFrame:
     return lookup[["_url_norm", COMPANY_ID_COL]]
 
 
+def merge_source3_features(df: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.DataFrame:
+    """Shared by add_features (labelled panel) and predict.py's
+    add_prediction_features (inference population) — same Source 3 join +
+    recency logic either way. `df` must already have a `year` column and
+    `company_id`."""
+    src3 = load_source3()
+    src3_features = build_source3_features(src3)
+    url_lookup = _source3_url_to_company_id(segmented_df)
+    src3_features = src3_features.merge(url_lookup, on="_url_norm", how="inner").drop(columns="_url_norm")
+    df = df.merge(src3_features, on=COMPANY_ID_COL, how="left")
+
+    # Recency relative to each row's year, same pattern as
+    # company_age_years — but unlike founded_year (a true static fact),
+    # "latest grant/fundraising date" is a cumulative-to-export-date
+    # snapshot: a grant received in 2023 shouldn't appear "recent" (or
+    # exist at all) for a company's 2015 row. Rather than emit a negative
+    # recency (which would leak that a future grant is coming), null it
+    # out for any row whose year predates the latest event.
+    df["grant_recency_years"] = df["year"] - df["_grants_latest_date"].dt.year
+    df.loc[df["grant_recency_years"] < 0, "grant_recency_years"] = np.nan
+    df["fundraising_recency_years"] = df["year"] - df["_fundraising_latest_date"].dt.year
+    df.loc[df["fundraising_recency_years"] < 0, "fundraising_recency_years"] = np.nan
+    df = df.drop(columns=["_grants_latest_date", "_fundraising_latest_date"])
+    return df
+
+
 def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = panel.merge(
         segmented_df[MERGE_KEY + list(STATIC_COLS)].rename(columns=STATIC_COLS),
@@ -214,24 +242,7 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
     age_log = age_log.rename(columns={"company_age_years": "original_company_age_years"})
     df.loc[is_age_anomaly, "company_age_years"] = np.nan
 
-    src3 = load_source3()
-    src3_features = build_source3_features(src3)
-    url_lookup = _source3_url_to_company_id(segmented_df)
-    src3_features = src3_features.merge(url_lookup, on="_url_norm", how="inner").drop(columns="_url_norm")
-    df = df.merge(src3_features, on=COMPANY_ID_COL, how="left")
-
-    # Recency relative to each panel row's year, same pattern as
-    # company_age_years — but unlike founded_year (a true static fact),
-    # "latest grant/fundraising date" is a cumulative-to-export-date
-    # snapshot: a grant received in 2023 shouldn't appear "recent" (or
-    # exist at all) for a company's 2015 panel row. Rather than emit a
-    # negative recency (which would leak that a future grant is coming),
-    # null it out for any row whose year predates the latest event.
-    df["grant_recency_years"] = df["year"] - df["_grants_latest_date"].dt.year
-    df.loc[df["grant_recency_years"] < 0, "grant_recency_years"] = np.nan
-    df["fundraising_recency_years"] = df["year"] - df["_fundraising_latest_date"].dt.year
-    df.loc[df["fundraising_recency_years"] < 0, "fundraising_recency_years"] = np.nan
-    df = df.drop(columns=["_grants_latest_date", "_fundraising_latest_date"])
+    df = merge_source3_features(df, segmented_df)
 
     return df, age_log
 
