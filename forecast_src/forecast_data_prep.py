@@ -342,6 +342,55 @@ def validate_historical_panel(path: Path = HISTORICAL_PANEL_PATH) -> tuple[pd.Da
     return df, quality_log, field_gaps
 
 
+def find_invalid_turnover_flags(baseline_log: pd.DataFrame, panel_log: pd.DataFrame) -> pd.DataFrame:
+    """Pulls the company_ids check_turnover already flagged (negative/non-
+    finite/non-numeric) out of each validate_* quality log — reuses that
+    check's row-level detection rather than re-parsing turnover values a
+    second time. The log rows are captured from the PRE-nulling frame (see
+    check_turnover), so `offending_value` here is the actual invalid number,
+    not the NaN it gets replaced with."""
+    frames = []
+    if len(baseline_log) and "baseline_turnover" in baseline_log.columns:
+        hits = baseline_log[baseline_log["check"] == "baseline_turnover"].copy()
+        if len(hits):
+            hits["source"] = "completed_baseline"
+            hits["offending_year"] = hits["baseline_year"]
+            hits["offending_value"] = hits["baseline_turnover"]
+            frames.append(hits[["company_id", "source", "offending_year", "offending_value", "exclusion_reason"]])
+    if len(panel_log) and "turnover" in panel_log.columns:
+        hits = panel_log[panel_log["check"] == "turnover"].copy()
+        if len(hits):
+            hits["source"] = "historical_panel"
+            hits["offending_year"] = hits["accounting_year"]
+            hits["offending_value"] = hits["turnover"]
+            frames.append(hits[["company_id", "source", "offending_year", "offending_value", "exclusion_reason"]])
+    if not frames:
+        return pd.DataFrame(columns=["company_id", "source", "offending_year", "offending_value", "exclusion_reason"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def exclude_companies_with_invalid_turnover(
+    baseline: pd.DataFrame, panel: pd.DataFrame, baseline_log: pd.DataFrame, panel_log: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Project policy (distinct from sec 3.3's per-row null-and-log, and from
+    mission_segmentation.py's KNOWN_MISCATEGORIZED_COMPANIES — this is a
+    general rule, not a specific-company exception): a company with an
+    invalid turnover value ANYWHERE in its history — any panel year, or its
+    single baseline snapshot — is dropped from the forecasting pipeline
+    ENTIRELY, not corrected or nulled-and-carried-forward. A company with 10
+    clean years and 1 negative one is still fully excluded; sec 3.3's
+    row-level null-and-log already ran first (baseline/panel here are
+    already the "clean" frames from validate_completed_baseline/
+    validate_historical_panel), this removes every remaining row for that
+    company_id from BOTH inputs, since the two are cross-referenced (a
+    company flagged only in one input is still excluded from both)."""
+    flags = find_invalid_turnover_flags(baseline_log, panel_log)
+    invalid_company_ids = set(flags["company_id"].unique())
+    baseline_clean = baseline[~baseline["company_id"].isin(invalid_company_ids)].copy()
+    panel_clean = panel[~panel["company_id"].isin(invalid_company_ids)].copy()
+    return baseline_clean, panel_clean, flags
+
+
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -372,16 +421,32 @@ def main() -> None:
         print(f"Missing required fields (not fabricated): {panel_gaps['missing_field'].tolist()}")
     print(f"mission distribution: {panel['mission'].value_counts(dropna=False).to_dict()}")
 
+    print("\n=== Invalid-turnover-history exclusion (policy, not sec 3.3) ===")
+    baseline_n, panel_n = len(baseline), len(panel)
+    baseline, panel, invalid_turnover_log = exclude_companies_with_invalid_turnover(
+        baseline, panel, baseline_log, panel_log
+    )
+    n_companies_excluded = invalid_turnover_log["company_id"].nunique()
+    if n_companies_excluded:
+        print(f"Companies excluded entirely: {n_companies_excluded}")
+        print(invalid_turnover_log.to_string(index=False))
+        print(f"Baseline rows: {baseline_n} -> {len(baseline)} ({baseline_n - len(baseline)} removed)")
+        print(f"Panel rows: {panel_n} -> {len(panel)} ({panel_n - len(panel)} removed)")
+    else:
+        print("No companies with invalid turnover anywhere in their history.")
+
     baseline.to_csv(DATA_DIR / "forecast_baseline_validated.csv", index=False)
     baseline_log.to_csv(DATA_DIR / "forecast_baseline_quality_log.csv", index=False)
     panel.to_csv(DATA_DIR / "forecast_panel_validated.csv", index=False)
     panel_log.to_csv(DATA_DIR / "forecast_panel_quality_log.csv", index=False)
+    invalid_turnover_log.to_csv(DATA_DIR / "forecast_invalid_turnover_exclusions.csv", index=False)
     pd.concat([baseline_gaps, panel_gaps], ignore_index=True).to_csv(DATA_DIR / "forecast_field_gaps.csv", index=False)
 
     print(f"\nWrote {DATA_DIR / 'forecast_baseline_validated.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_baseline_quality_log.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_panel_validated.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_panel_quality_log.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_invalid_turnover_exclusions.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_field_gaps.csv'}")
 
 
