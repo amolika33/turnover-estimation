@@ -12,10 +12,13 @@ dataset (methodology sec 1.10). One row per company, in priority order:
    — turnover_source="no_model_insufficient_data" flags this explicitly
    rather than passing off a number with false confidence. Read from
    selected_models.csv, not hardcoded — see model_selection.py.
-4. Cross-cutting companies with no observed turnover — retained for
-   reference per the methodology; the buzzword-based best-guess mission
-   assignment + scoring extension isn't built yet (see CLAUDE.md "Planned:
-   cross-cutting predictions").
+4. Cross-cutting companies with no observed turnover — scored via
+   src/cross_cutting_prediction.py's buzzword/SIC-code best-guess mission
+   assignment (see that module's docstring and CLAUDE.md "Planned:
+   cross-cutting predictions"), reliability="approximate" (distinct from
+   observed/standard/low — the mission itself is inferred, not given).
+   Companies for which even that produced no valid prediction fall through
+   to turnover_source="cross_cutting_unmodelled" below.
 5. Data-quality exclusions (e.g. the Sky UK data-entry-error row, and any
    future true-duplicate company records) — retained for reference, not
    silently dropped.
@@ -43,9 +46,10 @@ JOIN_KEY = [COMPANY_ID_COL]
 IDENTITY_COLS = [COMPANY_ID_COL, NAME_COL, URL_COL, CH_COL]
 
 CROSS_CUTTING_REASON = (
-    "Cross-cutting companies retained for reference; buzzword-based best-guess "
-    "mission assignment + scoring not yet built (see CLAUDE.md 'Planned: "
-    "cross-cutting predictions')."
+    "Cross-cutting company retained for reference; the buzzword/SIC-code best-guess "
+    "mission assignment (src/cross_cutting_prediction.py) produced no valid prediction "
+    "for this company (e.g. no covariate data to score at all) — see "
+    "predictions_cross_cutting.csv / prediction_invalid_reason for detail."
 )
 
 # ASSUMPTION (documented here + CLAUDE.md "Stale observed turnover" +
@@ -167,10 +171,23 @@ def main() -> None:
     segmented, _ = segment_missions(prepped, mapping)
     unusable_missions = load_unusable_missions()
 
+    prediction_cols = JOIN_KEY + ["prediction_year", "predicted_total_turnover", "reliability", "reliability_reason"]
     predictions_path = OUTPUT_DIR / "predictions_all.csv"
-    predictions_df = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame(
-        columns=JOIN_KEY + ["prediction_year", "predicted_total_turnover", "reliability", "reliability_reason"]
-    )
+    predictions_df = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame(columns=prediction_cols)
+
+    # Cross-cutting best-guess predictions (src/cross_cutting_prediction.py)
+    # are a separate population from the 3 real missions' inference_all —
+    # same predictions_all.csv schema, concatenated in here rather than
+    # merged into predict.py's own output, since they come from a distinct
+    # process (mission itself is guessed, not given) that assemble() doesn't
+    # need to know about beyond reading the same 5 columns.
+    cross_cutting_path = OUTPUT_DIR / "predictions_cross_cutting.csv"
+    if cross_cutting_path.exists():
+        cross_cutting_df = pd.read_csv(cross_cutting_path)
+        if len(cross_cutting_df):
+            predictions_df = pd.concat(
+                [predictions_df, cross_cutting_df[prediction_cols]], ignore_index=True
+            )
 
     final, duplicates = assemble(segmented, predictions_df, unusable_missions)
 

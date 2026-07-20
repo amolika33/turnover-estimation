@@ -1,8 +1,9 @@
 """Validate the two required inputs to the 2030 forecasting pipeline
 (FORECASTING_METHODOLOGY.md sec 2-3): the completed company baseline
-(turnover-estimation's `assemble.py` output) and the historical
-company-year panel. Neither input is built here — this module only checks
-and cleans what the turnover-estimation pipeline already produced.
+(turnover-estimation's `assemble.py` output, read as-is — not built here)
+and the historical company-year panel (built here, by
+build_historical_panel_source, since no existing turnover-estimation
+output covers all 4 mission groups — see that function's docstring).
 
 Column names in the source CSVs don't match the methodology's spec names
 (e.g. "Organisation Name" vs `company_name`, "year" vs `accounting_year`) —
@@ -27,20 +28,33 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.sample_construction import YEARS
+from src.data_prep import COMPANY_ID_COL, prepare_source2
+from src.feature_engineering import STATIC_COLS, _melt_year_indexed
+from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
+from src.sample_construction import YEARS, build_long_panel, split_labelled_inference
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data" / "processed"
 
+# mission_segmentation.py's own spelling for the fourth group (its
+# `training_eligible` check uses this literal directly, no exported
+# constant exists) — matched here rather than "Cross-Cutting" (the
+# methodology's canonical spelling, applied downstream by check_mission).
+CROSS_CUTTING_MISSION_VALUE = "Cross-cutting"
+
 # Defaults: the completed baseline is turnover-estimation's assemble.py
-# output; the historical panel is the richest available real company-year
-# table with observed turnover (labelled_features.csv — has the company/
-# financial columns the spec wants, unlike the leaner labelled_panel.csv).
-# Cross-cutting companies are NOT present in labelled_features.csv (excluded
-# from modelling upstream, per mission_segmentation.py) — see the module
-# docstring's note on this in the validation report.
+# output. The historical panel is built fresh by build_historical_panel_source
+# below, NOT read from labelled_features.csv — that file only covers ACE/
+# Beyond Earth/Resilient Earth (mission_segmentation.py's training_eligible
+# flag deliberately excludes Cross-cutting from ML feature engineering,
+# since those companies never train any mission model). Forecasting needs
+# Cross-cutting's observed turnover history too — the 108 companies with
+# real history are forecastable with company-level growth models
+# (persistence, CAGR) that don't need a mission-specific model at all, so
+# they don't need labelled_features.csv's richer ML feature set either.
 COMPLETED_BASELINE_PATH = DATA_DIR / "final_completed_dataset.csv"
-HISTORICAL_PANEL_PATH = DATA_DIR / "labelled_features.csv"
+HISTORICAL_PANEL_SOURCE_PATH = DATA_DIR / "forecast_full_historical_panel.csv"
+HISTORICAL_PANEL_PATH = HISTORICAL_PANEL_SOURCE_PATH
 
 # Sec 3.4: "outside the supported historical range" — reuse the estimation
 # pipeline's own YEARS range rather than a second hardcoded copy that could
@@ -126,6 +140,47 @@ PANEL_COLUMN_MAP = {
 # retroactively to each of its earlier years, which sec 2.2 explicitly
 # prohibits ("current company values must not be attached retrospectively to
 # earlier years"). Left absent rather than aliased; see find_missing_fields.
+
+
+def build_historical_panel_source() -> pd.DataFrame:
+    """Builds the historical company-year panel fresh, covering all 4 mission
+    groups (ACE, Beyond Earth, Resilient Earth, Cross-Cutting) — not the
+    labelled_features.csv companies-in-training-eligible-missions-only
+    population. Reuses sample_construction's split_labelled_inference/
+    build_long_panel (both already mission-agnostic, just never called on
+    anything but REAL_MISSIONS before this) and feature_engineering's
+    STATIC_COLS/_melt_year_indexed for company_age/value_stream/sic_code_1/
+    company_size — the same static-column join add_features does for the ML
+    panel, without any of the grants/accelerator/Source3 features, which
+    Cross-cutting's company-level growth models (persistence, CAGR) don't
+    need and which haven't been verified to cover the Cross-cutting
+    population anyway."""
+    prepped, _ = prepare_source2()
+    mapping = load_mapping()
+    segmented, _ = segment_missions(prepped, mapping)
+    # Same true-duplicate exclusion every other module in this pipeline
+    # applies (0 rows affected currently, kept for consistency — see
+    # data_prep.py's resolve_duplicate_ch_numbers).
+    segmented = segmented[~segmented["is_true_duplicate"]]
+
+    groups = REAL_MISSIONS + [CROSS_CUTTING_MISSION_VALUE]
+    panels = []
+    for group in groups:
+        group_df = segmented[segmented[MISSION_COL] == group]
+        labelled, _inference = split_labelled_inference(group_df)
+        panels.append(build_long_panel(labelled))
+    full_panel = pd.concat(panels, ignore_index=True)
+
+    static = segmented[[COMPANY_ID_COL] + list(STATIC_COLS)].rename(columns=STATIC_COLS)
+    full_panel = full_panel.merge(static, on=COMPANY_ID_COL, how="left")
+
+    size_long = _melt_year_indexed(segmented, "Size {year}", "company_size")
+    full_panel = full_panel.merge(size_long, on=[COMPANY_ID_COL, "year"], how="left")
+
+    full_panel["company_age_years"] = full_panel["year"] - full_panel["founded_year"]
+    full_panel.loc[full_panel["company_age_years"] < 0, "company_age_years"] = np.nan
+
+    return full_panel
 
 
 def find_missing_fields(df: pd.DataFrame, required_fields: list[str], dataset_name: str) -> pd.DataFrame:
@@ -303,6 +358,10 @@ def main() -> None:
     print(f"mission distribution: {baseline['mission'].value_counts(dropna=False).to_dict()}")
 
     print("\n=== Historical company-year panel ===")
+    panel_source = build_historical_panel_source()
+    panel_source.to_csv(HISTORICAL_PANEL_SOURCE_PATH, index=False)
+    print(f"Built {HISTORICAL_PANEL_SOURCE_PATH.relative_to(REPO_ROOT)} ({len(panel_source)} rows, 4 mission groups incl. Cross-Cutting)")
+
     panel_raw = pd.read_csv(HISTORICAL_PANEL_PATH)
     panel, panel_log, panel_gaps = validate_historical_panel()
     print(f"Input: {HISTORICAL_PANEL_PATH.relative_to(REPO_ROOT)} ({len(panel_raw)} rows)")
@@ -312,12 +371,6 @@ def main() -> None:
     if len(panel_gaps):
         print(f"Missing required fields (not fabricated): {panel_gaps['missing_field'].tolist()}")
     print(f"mission distribution: {panel['mission'].value_counts(dropna=False).to_dict()}")
-    print(
-        "NOTE: historical panel has no Cross-Cutting rows — excluded from modelling "
-        "upstream in mission_segmentation.py, before this ever reaches labelled_features.csv. "
-        "Cross-cutting companies are present in the completed baseline (retained per sec 3.5) "
-        "but currently have zero historical panel rows to build H_{i,t} from."
-    )
 
     baseline.to_csv(DATA_DIR / "forecast_baseline_validated.csv", index=False)
     baseline_log.to_csv(DATA_DIR / "forecast_baseline_quality_log.csv", index=False)

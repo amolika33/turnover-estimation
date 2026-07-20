@@ -34,9 +34,11 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 - **Three independent mission models**: Autonomous and Connected Earth (ACE),
   Beyond Earth, Resilient Earth. Each mission gets its own dataset, its own
   regression bake-off, and its own selected model. Do not pool missions into one model.
-- **Cross-cutting companies** are excluded from modelling entirely (retained for
-  reference only) — they can't be assigned to a single mission without extra assumptions.
-  (Planned extension, not yet built — see "Planned: cross-cutting predictions" below.)
+- **Cross-cutting companies** are excluded from modelling (training) entirely
+  (retained for reference only) — they can't be assigned to a single mission
+  without extra assumptions. At inference time only, a best-guess mission
+  assignment now scores their turnover — see "Cross-cutting company
+  predictions" below.
 - **Adjacent-company datasets** (one per mission) exist only to enlarge the labelled
   training set. They are never part of the inference/prediction population.
   Model *selection* must be validated on held-out **space companies only**, not
@@ -187,8 +189,8 @@ is deliberately re-sequenced to prove out the ML core first, using only the
    companies arrive as three separate mission-specific exports (one per
    mission), pre-tagged or filename-tagged — *not* requiring the
    buzzword/SIC-based inference originally planned for them (that
-   inference logic is now scoped to cross-cutting companies only, at
-   prediction time — see "Planned: cross-cutting predictions" below).
+   inference logic is scoped to cross-cutting companies only, at
+   prediction time — see "Cross-cutting company predictions" below).
    **Not optional, must change when this happens**: `model_bakeoff.py`'s
    outer `GroupKFold` (`make_repeated_group_kfold_splits`) currently
    groups every row in the mission dataset by `company_id` with no
@@ -204,28 +206,52 @@ is deliberately re-sequenced to prove out the ML core first, using only the
 
 Validate each stage against a small toy sample before moving to the next.
 
-## Planned: cross-cutting company predictions (not yet built)
+## Cross-cutting company predictions (`src/cross_cutting_prediction.py`)
 
-The written methodology only says cross-cutting companies (Consultancy / Other,
-Explore New Markets Value Streams) are "retained for reference." We eventually
-want turnover predictions for them too, which goes beyond that — this is an
-explicitly deferred extra step, to be built only after the core 3-mission
-pipeline works end-to-end:
+The written methodology only said cross-cutting companies (Consultancy /
+Other, Explore New Markets Value Streams) are "retained for reference." This
+extension (originally deferred, now built) generates real turnover values
+for the 197 with zero observed turnover history — the other 108 cross-cutting
+companies have real observed turnover and are untouched, handled entirely by
+`assemble.py`'s existing observed-turnover branch.
 
-- At **prediction time only** (never for training), assign each cross-cutting
-  company a best-guess mission via buzzword/keyword similarity to the three
-  mission categories. **Correction**: this is no longer shared with
-  adjacent-company mission assignment — adjacent companies turn out to
-  arrive as three separate pre-tagged/filename-tagged mission exports (see
-  `ADJACENT_DATA_REQUIREMENTS.md`), not needing inference. This
-  buzzword-similarity logic is cross-cutting-only.
-- Score the company with whichever mission model that best-guess assignment
-  points to.
-- Mark these predictions clearly as **"approximate"** in the reliability/
-  confidence indicator (distinct from normal predicted-vs-observed status),
-  since the mission assignment itself is inferred, not given.
+- **At prediction time only** (never for training): each cross-cutting
+  company with no observed turnover is assigned a best-guess mission (ACE /
+  Beyond Earth / Resilient Earth) via similarity to the three real missions'
+  own companies, on two signals — SIC Code 1 (categorical exact-match) and
+  `LinkedIn Specialties (Keywords)` (free-text buzzwords, comma-separated;
+  this is the concrete use of the buzzword-similarity approach that
+  `feature_engineering.py`'s `DROPPED_COLUMNS` flagged this column for
+  instead of using it as an ML feature). Each signal scores a mission as
+  (companies in that mission matching this value) / (that mission's company
+  count) — normalising by mission size so Beyond Earth (459 companies) isn't
+  favoured just for being the largest — then both signals are normalised to
+  sum to 1 across missions and added (equal weight, no tuned blend). A
+  company with zero signal on both axes (SIC code and every keyword unmatched
+  anywhere in the 3 real missions) falls back to the largest real mission by
+  company count, tagged `assignment_method="fallback_plurality_mission_no_
+  signal"` so it's visibly the weakest-evidence case rather than indistinguishable
+  from a real match. Current run: 197 scored, 150 `sic_and_keyword_similarity`,
+  19 keyword-only, 18 SIC-only, 10 fallback. Assigned-mission distribution:
+  Resilient Earth 89, Beyond Earth 80, ACE 28.
+- The company is then scored with whichever mission model that best-guess
+  assignment points to — same `build_covariate_snapshot`/
+  `add_prediction_features`/`compute_reliability` feature path as a real
+  inference-population company (imported directly from `predict.py`, not
+  reimplemented).
+- `reliability` is unconditionally set to **`"approximate"`** — distinct
+  from every other value in the pipeline (observed/standard/low) — since the
+  mission itself is inferred here, not given, regardless of what the
+  underlying OOD check found. `reliability_reason` keeps both the assignment
+  method and the OOD reason (if any), not just one or the other.
 - Cross-cutting companies still never enter training data for any mission
   model, no exceptions — this only affects what happens at inference time.
+- Writes `predictions_cross_cutting.csv` (same schema as `predictions_all.csv`)
+  — `assemble.py`'s `main()` concatenates it onto `predictions_all.csv` before
+  calling `assemble()`, so the function itself needed no logic change; a
+  cross-cutting company only still lands in `turnover_source=
+  "cross_cutting_unmodelled"` if even best-guess scoring produced no valid
+  prediction for it (e.g. zero covariate data anywhere to build a snapshot from).
 
 ## Data quality exclusions from training (see DATA_SCHEMA.md for detail)
 
