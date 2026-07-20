@@ -4,7 +4,11 @@ dataset (methodology sec 1.10). One row per company, in priority order:
 1. Observed turnover (any mission, any eligibility, including cross-cutting)
    — the company's most recent year with a non-null Total Turnover value.
    Never overwritten by a prediction. Mission status doesn't invalidate
-   ground-truth data that's independent of mission assignment.
+   ground-truth data that's independent of mission assignment — EXCEPT for
+   mission_segmentation.py's KNOWN_MISCATEGORIZED_COMPANIES (distinct from
+   the Sky UK data-entry-error case): those are excluded from this branch
+   too, since the turnover value's own relevance is in question, not just
+   the mission tag (see KNOWN_MISCATEGORIZED_COMPANIES' per-company reason).
 2. Predicted turnover — inference companies in missions selected_models.csv
    marks usable=True, scored by predict.py.
 3. Inference companies in a mission marked usable=False (e.g. ACE: its
@@ -19,9 +23,11 @@ dataset (methodology sec 1.10). One row per company, in priority order:
    observed/standard/low — the mission itself is inferred, not given).
    Companies for which even that produced no valid prediction fall through
    to turnover_source="cross_cutting_unmodelled" below.
-5. Data-quality exclusions (e.g. the Sky UK data-entry-error row, and any
-   future true-duplicate company records) — retained for reference, not
-   silently dropped.
+5. Data-quality exclusions (Sky UK's data-entry-error row,
+   KNOWN_MISCATEGORIZED_COMPANIES entries, and any future true-duplicate
+   company records) — retained for reference, not silently dropped; the
+   real per-row reason from mission_segmentation.py's exclusion_reason
+   column is carried straight through, not a second hardcoded copy of it.
 
 Also flags (not yet acts on) stale observed turnover — see
 STALE_THRESHOLD_YEARS below — and enforces one-row-per-company by
@@ -30,10 +36,11 @@ silently dropping or keeping both (see enforce_one_company_per_row).
 """
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, prepare_source2
-from src.mission_segmentation import MISSION_COL, load_mapping, segment_missions
+from src.mission_segmentation import KNOWN_MISCATEGORIZED_COMPANIES, MISSION_COL, load_mapping, segment_missions
 from src.sample_construction import YEARS, turnover_col
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -103,8 +110,10 @@ def load_unusable_missions() -> dict:
 def assemble(
     segmented_df: pd.DataFrame, predictions_df: pd.DataFrame, unusable_missions: dict
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    base = segmented_df[IDENTITY_COLS + [MISSION_COL, "training_eligible"]].copy()
+    base = segmented_df[IDENTITY_COLS + [MISSION_COL, "training_eligible", "exclusion_reason"]].copy()
     base, dup_source = enforce_one_company_per_row(base, "segmented_df_source")
+
+    is_known_miscategorized = base[COMPANY_ID_COL].isin(KNOWN_MISCATEGORIZED_COMPANIES)
 
     observed = latest_observed_turnover(segmented_df)
     base = base.merge(observed, on=JOIN_KEY, how="left")
@@ -112,7 +121,13 @@ def assemble(
     base["reliability"] = pd.NA
     base["reliability_reason"] = ""
 
-    is_observed = base["turnover_value"].notna()
+    # KNOWN_MISCATEGORIZED_COMPANIES rows never win the observed branch below
+    # even when a real Total Turnover figure exists — see the module
+    # docstring's point 1 for why this differs from Sky UK's treatment.
+    base.loc[is_known_miscategorized, "turnover_value"] = np.nan
+    base.loc[is_known_miscategorized, "year"] = np.nan
+
+    is_observed = ~is_known_miscategorized & base["turnover_value"].notna()
     base.loc[is_observed, "turnover_source"] = "observed"
     base.loc[is_observed, "reliability"] = "observed"
 
@@ -149,7 +164,10 @@ def assemble(
     is_data_error = base["turnover_source"].isna() & base[MISSION_COL].isna()
     base.loc[is_data_error, "turnover_source"] = "excluded_data_entry_error"
     base.loc[is_data_error, "reliability"] = "n/a"
-    base.loc[is_data_error, "reliability_reason"] = "Value Stream was a data-entry error (e.g. Sky UK's own name pasted into the field) — excluded from mission mapping entirely, see DATA_SCHEMA.md."
+    # The real per-row reason from mission_segmentation.py's exclusion_reason
+    # (Sky UK's Value-Stream typo, a KNOWN_MISCATEGORIZED_COMPANIES entry, or
+    # both) — not a second hardcoded copy that only ever described Sky UK.
+    base.loc[is_data_error, "reliability_reason"] = base.loc[is_data_error, "exclusion_reason"]
 
     most_recent_filed_year = base.loc[base["turnover_source"] == "observed", "year"].max()
     has_year = base["year"].notna()
@@ -159,7 +177,7 @@ def assemble(
     is_obs = base["turnover_source"] == "observed"
     base.loc[is_obs, "turnover_is_stale"] = base.loc[is_obs, "turnover_age_years"] > STALE_THRESHOLD_YEARS
 
-    base = base.drop(columns=["training_eligible"])
+    base = base.drop(columns=["training_eligible", "exclusion_reason"])
     base, dup_final = enforce_one_company_per_row(base, "post_assembly")
     duplicates = pd.concat([dup_source, dup_final], ignore_index=True)
     return base, duplicates
