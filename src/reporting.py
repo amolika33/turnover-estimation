@@ -5,9 +5,15 @@ CSVs only — no visualisation tooling assumed.
 Uses the CURRENTLY saved final_model_*.joblib artifacts (produced by
 model_selection.py from the latest model_bakeoff.py run) — rerun the
 bake-off + model_selection first if the feature set or data has changed.
-feature_weights_{mission}.csv is linear-model-only: missions whose selected
-model has no single coefficient per feature (e.g. Gradient Boosting/Random
-Forest) are skipped there with a printed reason, but still get their
+feature_weights_{mission}.csv has two possible shapes depending on the
+mission's selected model, distinguished by a `metric_type` column (and, for
+the importance shape, a leading '#' comment line in the file itself):
+linear models (Lasso/Ridge/Elastic Net/Linear Regression) get log-space
+`coefficient` + `direction` (sign is meaningful); tree ensembles with no
+coef_ (Gradient Boosting/Random Forest/Extra Trees) fall back to
+`feature_importances_` as an `importance` column (magnitude only, no
+sign/direction — not comparable to a coefficient). A selected model with
+neither is skipped with a printed reason, but still gets its
 performance_summary/actual_vs_predicted/residuals artifacts.
 """
 import json
@@ -47,37 +53,73 @@ OUTER_N_SPLITS = 5
 OUTER_N_REPEATS = 5
 
 
-def extract_feature_weights(mission: str) -> pd.DataFrame:
-    """Coefficients are in log-turnover space (target was log1p-transformed
-    via TransformedTargetRegressor) and, for these scale-sensitive models,
-    standardised-feature space too (numeric features pass through
-    StandardScaler) — multiplicative effects on turnover, not additive raw
-    ones, and not directly comparable to a coefficient on an unscaled
-    feature. Sign/direction is still directly meaningful."""
+def extract_feature_weights(mission: str) -> tuple[pd.DataFrame, str | None]:
+    """Returns (weights_df, header_note). header_note is None for the
+    coefficient path (linear models) and a plain-text explanatory line for
+    the importance path (tree ensembles), meant to be written as the first
+    line of the output CSV — see main().
+
+    Coefficient path: coefficients are in log-turnover space (target was
+    log1p-transformed via TransformedTargetRegressor) and, for these
+    scale-sensitive models, standardised-feature space too (numeric features
+    pass through StandardScaler) — multiplicative effects on turnover, not
+    additive raw ones, and not directly comparable to a coefficient on an
+    unscaled feature. Sign/direction is still directly meaningful.
+
+    Importance path (models with no coef_, e.g. Gradient Boosting/Random
+    Forest/Extra Trees): sklearn's `feature_importances_` is magnitude-only
+    (non-negative, sums to 1 across features) — it says how much a feature
+    reduced impurity/loss across the ensemble's splits, not whether higher
+    values of that feature push turnover up or down. This is NOT the same
+    quantity as `coefficient` in the linear-model output, so it's written to
+    its own `importance` column (no `direction` column, since one doesn't
+    exist for this metric) with a `metric_type` flag and a header comment,
+    rather than silently reusing the coefficient schema."""
     slug = mission.lower().replace(" ", "_")
     model = joblib.load(OUTPUT_DIR / f"final_model_{slug}.joblib")
     preprocessor = model.named_steps["preprocess"]
     ttr = model.named_steps["model"]
-
-    if not hasattr(ttr.regressor_, "coef_"):
-        raise ValueError(
-            f"{mission}: selected model ({type(ttr.regressor_).__name__}) has no linear "
-            "coefficients — extract_feature_weights only supports linear models."
-        )
-
+    regressor = ttr.regressor_
     feature_names = preprocessor.get_feature_names_out()
-    coefs = ttr.regressor_.coef_
-    df = pd.DataFrame(
-        {
-            "Mission": mission,
-            "feature": feature_names,
-            "coefficient": coefs,
-        }
+
+    if hasattr(regressor, "coef_"):
+        df = pd.DataFrame(
+            {
+                "Mission": mission,
+                "feature": feature_names,
+                "coefficient": regressor.coef_,
+            }
+        )
+        df["direction"] = np.select(
+            [df["coefficient"] > 0, df["coefficient"] < 0], ["positive", "negative"], default="zero"
+        )
+        df["metric_type"] = "coefficient"
+        df["abs_coefficient"] = df["coefficient"].abs()
+        df = df.sort_values("abs_coefficient", ascending=False).drop(columns="abs_coefficient").reset_index(drop=True)
+        return df, None
+
+    if hasattr(regressor, "feature_importances_"):
+        df = pd.DataFrame(
+            {
+                "Mission": mission,
+                "feature": feature_names,
+                "importance": regressor.feature_importances_,
+            }
+        )
+        df["metric_type"] = "importance"
+        df = df.sort_values("importance", ascending=False).reset_index(drop=True)
+        header_note = (
+            f"# {mission}: {type(regressor).__name__}.feature_importances_ — magnitude only "
+            "(impurity/loss reduction, sums to 1 across features), NOT a coefficient. No sign/"
+            "direction is available for this metric_type, unlike the coefficient-based "
+            "feature_weights files for missions with a linear selected model."
+        )
+        return df, header_note
+
+    raise ValueError(
+        f"{mission}: selected model ({type(regressor).__name__}) supports neither `coef_` nor "
+        "`feature_importances_` — extract_feature_weights has no extraction path for it."
     )
-    df["direction"] = np.select([df["coefficient"] > 0, df["coefficient"] < 0], ["positive", "negative"], default="zero")
-    df["abs_coefficient"] = df["coefficient"].abs()
-    df = df.sort_values("abs_coefficient", ascending=False).drop(columns="abs_coefficient").reset_index(drop=True)
-    return df
 
 
 def performance_summary() -> pd.DataFrame:
@@ -182,17 +224,28 @@ def main() -> None:
         slug = mission.lower().replace(" ", "_")
         print(f"=== {mission}: feature weights ===")
         try:
-            weights = extract_feature_weights(mission)
+            weights, header_note = extract_feature_weights(mission)
         except ValueError as exc:
-            # Non-linear winners (e.g. Gradient Boosting/Random Forest) have
-            # no single coefficient per feature — feature_weights_{mission}.csv
-            # is a linear-model-only artifact, so skip it here rather than
-            # aborting the OOF/residuals generation below for every mission.
+            # A selected model with neither coef_ nor feature_importances_
+            # (not currently reachable by any of the 9 bake-off candidates,
+            # but kept as a safety net) — skip it here rather than aborting
+            # the OOF/residuals generation below for every mission.
             print(f"SKIPPED: {exc}\n")
             continue
-        weights.to_csv(OUTPUT_DIR / f"feature_weights_{slug}.csv", index=False)
+
+        out_path = OUTPUT_DIR / f"feature_weights_{slug}.csv"
+        if header_note:
+            # Importance-based file: a leading '#' comment line makes the
+            # metric_type switch (coefficient vs. importance) visible even
+            # to someone opening the CSV directly, not just reading the
+            # metric_type column programmatically.
+            with open(out_path, "w") as f:
+                f.write(header_note + "\n")
+            weights.to_csv(out_path, mode="a", index=False)
+        else:
+            weights.to_csv(out_path, index=False)
         print(weights.head(10).to_string(index=False))
-        print(f"Wrote {OUTPUT_DIR / f'feature_weights_{slug}.csv'} ({len(weights)} features)\n")
+        print(f"Wrote {out_path} ({len(weights)} features)\n")
 
     for mission in REAL_MISSIONS:
         slug = mission.lower().replace(" ", "_")
