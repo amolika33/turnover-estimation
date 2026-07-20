@@ -658,3 +658,56 @@ Separate pipeline stage, built on the completed dataset above — see
      confidence than one built on Group A (3+ observed years), via the same
      `forecast_evidence_group` / reliability columns the main forecast
      already carries, not a separate ad hoc confidence score.
+
+   ✅ **Built.** `forecast_10m_crossings.csv`, `forecast_gazelle_10pct.csv`,
+   `forecast_gazelle_20pct.csv`, `forecast_gazelle_50m_intersection.csv`
+   all carry `forecast_evidence_group`, `baseline_turnover_source`,
+   `n_real_years`, `evidence_gate_triggered` (was this company's raw
+   growth signal ever downgraded by the Group-A evidence gate?), and
+   `growth_decay_applied` (was Ridge/CAGR ever actually used for it, i.e.
+   did decay apply at all, vs. a trajectory decided entirely by
+   Persistence). Gazelle tiers walk `forecast_full_trajectories.csv`'s
+   FULL year-by-year sequence (real history + predicted years together),
+   not baseline-vs-2030 — a company already gazelle-qualifying in its real
+   history counts, matching the brief's "not just the endpoint."
+
+   **Two additions beyond the original plan, both stated assumptions:**
+
+   - **Operational scaling indicator** (`forecast_operational_scaling.csv`,
+     independent of the turnover gazelle tiers): flags sustained
+     `employee_growth` or `asset_growth` (sec 7.7's log-difference
+     features, same construction as `log_growth_1y` after their earlier
+     reformulation) at the same 10%/20%-for-3+-years logic as the turnover
+     gazelle tiers — reusing the identical thresholds/consecutive-year rule
+     rather than inventing a third growth-rate convention. Requires 3+ REAL
+     years of the SPECIFIC covariate (employees for employee_growth,
+     total_assets for asset_growth) — not `forecast_evidence_group`, which
+     measures turnover-history depth specifically and is a different axis:
+     a company can have thin turnover evidence but rich filed-employee
+     history, or vice versa, and this flag should track its own evidence.
+     Catches companies scaling operationally (headcount, balance sheet)
+     even in years without a usable turnover figure — the FEATURE this
+     draws on was already built (sec 7.7), this is a new REPORTING use of
+     it, not new feature engineering.
+   - **Credibility gate on the £50M intersection specifically**
+     (`credibility_status` column, `forecast_gazelle_50m_intersection.csv`):
+     a company is only flagged as a genuine £50M candidate if it has
+     `forecast_evidence_group=="A"` (3+ real turnover years) AND at least
+     £1M turnover in one of its 5 most recent real reporting years.
+     Rationale: Group A alone doesn't rule out "genuinely real, but a tiny
+     early-stage company nowhere near £50M-scale operations" — exactly the
+     profile of 3 of the 6 growth-decay outlier companies (SaxaVord
+     Spaceport, Infleqtion, Map of Agriculture — all Group A on real data
+     that's still only in the tens/hundreds of thousands of pounds).
+     Companies failing the gate are NOT excluded from the output —
+     excluding them would look like they were never considered, when the
+     point is the opposite: they were considered and explicitly found not
+     to meet the credibility bar. **Current run: 0/77 companies in the
+     £50M intersection fail this gate** — not because the gate is
+     vacuous, but because growth-rate decay (already fixed, previous
+     session step) already pulled the thin-base outliers' 2030 values
+     below £50M before this gate ever runs (SaxaVord £42.4M, Infleqtion
+     £376K, Map of Agriculture £935K — none reach the £50M bar at all,
+     gazelle-qualifying or not). The gate is a safeguard against a future
+     data refresh or parameter change reintroducing that failure mode, not
+     evidence that it's unnecessary now.
