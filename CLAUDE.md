@@ -494,8 +494,8 @@ Separate pipeline stage, built on the completed dataset above — see
    result; `forecast_recursive.py` must apply the Persistence formula
    directly (`BENCHMARK_PREDICT_FNS` in `forecast_bakeoff.py`), not load a
    fitted model.
-7. 🔶 `forecast_recursive.py` — built, growth-routing verified against a
-   company sample, full 2030 run not yet executed (pending confirmation).
+7. ✅ `forecast_recursive.py` — built and run to 2030 for all 1,222 baseline
+   companies (0 NaN/negative/non-finite values in the output).
    **Not a per-mission fixed model after all**: forecast_selection.py's
    Persistence-everywhere result was checked with
    `forecast_evidence_group_diagnostic.py` before this module was built,
@@ -540,6 +540,47 @@ Separate pipeline stage, built on the completed dataset above — see
    (doesn't chase a one-year spike). Baseline-year classification counts:
    ACE 33 growing/162 stable, Beyond Earth 88/371, Resilient Earth 36/229,
    Cross-Cutting 42/261.
+
+   **Runaway compounding found on the first full run, partially fixed —
+   MIN_EVIDENCE_GROUP_FOR_TREND_CONTINUATION = "A"**: the first full run
+   produced 16 companies >100x their baseline turnover by 2030 (9 of them
+   >1000x, max ~22 million x). Every one traced back to a company with
+   only 1-2 real year-over-year transitions and one large early jump (e.g.
+   TerraFarmer: £75,592→£721,789, its only 2 real years, evidence Group B).
+   Root cause: Company Historical CAGR/Ridge under pure recursion has no
+   deceleration mechanism — the realized one-year growth between two
+   model-PREDICTED years exactly equals whatever rate was applied to
+   produce them, so once anchored to an extreme rate, a company's own
+   synthetic history keeps "confirming" that same rate forever (dynamic
+   re-classification doesn't catch this, since the smoothed signal
+   computed from that synthetic history just keeps reporting the same
+   extreme value). Fix: a company classified "growing" by growth_signal
+   but in evidence Group B/C/D (< 3 real historical years,
+   forecast_sample_construction.py's static, pre-recursion
+   forecast_evidence_group) falls back to Persistence regardless of its
+   measured rate — real data, but not enough evidence for a sustainable
+   rate worth compounding for up to 17 years.
+   **This is a partial fix, not a complete one — stated explicitly, not
+   silently assumed**: re-running after the gate, all originally-traced
+   Group-B/C companies (TerraFarmer, Agrimetrics, Space Skills Alliance)
+   dropped out as intended (Resilient Earth's growing-company max fell
+   5.22 trillion → 1.43 billion). But 6 companies remain >100x (4 still
+   >1000x, max ~230,151x) — SaxaVord Spaceport, Infleqtion, Map of
+   Agriculture, Eutelsat OneWeb, Sierra Nevada Corporation, Oxa — and every
+   one of these is evidence Group A (3-9 real years). The gate targets
+   thin EVIDENCE specifically; it doesn't address extreme RATE MAGNITUDE
+   from genuinely evidence-backed small-base, high-volatility companies
+   (the same population that produced Earth-i's 394x growth outlier and
+   the GMV/Added Value Solutions employee data issue earlier in this
+   project). A growth-rate cap or a decay/mean-reversion mechanism would
+   be the next candidate fix, not yet built pending a decision on it.
+   Air Liquide/AXA XL re-verified unaffected by the gate (both Group A,
+   never needed it — their own growth signal self-corrects without
+   intervention). Full run: 1,222/1,222 companies reached 2030, 75/1,222
+   (6.1%) flipped growing↔stable classification at least once, 52
+   company-year steps were downgraded by the evidence gate. Model usage
+   across all steps: Persistence 6,785, Company Historical CAGR 900,
+   Ridge 100.
 8. `forecast_assemble.py` — combine into final company-level 2030
    trajectories.
 9. `forecast_reporting.py` — **added to the plan, not yet built**.

@@ -78,6 +78,39 @@ export_revenue/company_size have no future values available at all (Source
 company's own last observed-or-predicted value going forward — carried
 forward automatically here since each new synthetic row copies these
 fields straight from the row used as that step's prediction origin.
+
+MINIMUM-EVIDENCE GATE ON TREND-CONTINUATION ROUTING (added after the first
+full run surfaced runaway compounding — stated assumption, same treatment
+as GROWTH_THRESHOLD): the first full 2030 run produced 16 companies with a
+>100x baseline multiple by 2030 (9 of them >1000x, one >7 million x). Every
+one traced back to a company with only 1-2 real year-over-year transitions
+showing one large early jump (e.g. TerraFarmer: £75,592 -> £721,789,
+2022->2023, its only 2 real years) — genuine data, but weak evidence for a
+SUSTAINABLE rate. Company Historical CAGR/Ridge under pure recursion has no
+natural deceleration: the realized one-year growth between two
+model-PREDICTED years exactly equals whatever rate was applied to produce
+them, so once anchored to an extreme rate from thin evidence, a company's
+own synthetic history "confirms" that same rate every subsequent step
+forever — dynamic re-classification (above) can't catch this, because the
+smoothed growth signal computed from that synthetic history keeps
+reporting the same extreme value it was fed.
+
+Fix: MIN_EVIDENCE_GROUP_FOR_TREND_CONTINUATION = "A" (>=3 REAL historical
+turnover years, forecast_sample_construction.py's evidence_group — a
+STATIC, pre-recursion classification that never changes during a
+company's own recursive run, unlike growth_signal above). A company
+classified "growing" by growth_signal but in evidence Group B/C/D falls
+back to Persistence regardless of its measured rate — one or two real
+transitions is real data, but not enough to trust as a sustainable
+per-year rate to compound for up to 17 years. This does NOT fully resolve
+the problem: SaxaVord Spaceport (Group A, 3 real years: 47,465 -> 508,000
+-> 1,866,000) and Eutelsat OneWeb (Group A, 9 real years, volatile) both
+have genuinely evidence-backed extreme historical rates and are NOT
+filtered by this gate — see the re-run report for whether they still
+produce non-credible 2030 values and what (if anything) further mitigation
+would look like. The gate targets thin EVIDENCE specifically, not
+extreme RATE MAGNITUDE — those are different failure modes and this fix
+only addresses the first.
 """
 from pathlib import Path
 
@@ -110,6 +143,14 @@ GROWTH_ROUTING_MODEL = {
     "Cross-Cutting": "Company Historical CAGR",
 }
 STABLE_MODEL = "Persistence"
+
+EVIDENCE_GROUPS_PATH = DATA_DIR / "forecast_evidence_groups.csv"
+# Minimum REAL-history evidence a company must have (forecast_sample_
+# construction.py's static, pre-recursion evidence_group) to be eligible
+# for trend-continuation routing even when growth_signal says "growing" —
+# see module docstring's "MINIMUM-EVIDENCE GATE" section for why this was
+# added and what it does/doesn't fix.
+MIN_EVIDENCE_GROUP_FOR_TREND_CONTINUATION = "A"
 MISSIONS_NEEDING_FITTED_ROUTING_MODEL = ["ACE"]  # only Ridge (ACE) needs an actual fit; CAGR/Persistence are formulas
 
 STATIC_COLS = {"Founded": "founded_year", "SIC Code 1": "sic_code_1", "Value Stream": "value_stream"}
@@ -174,13 +215,33 @@ def seed_missing_companies(panel: pd.DataFrame, baseline: pd.DataFrame) -> pd.Da
     return pd.concat([panel, seed_rows], ignore_index=True)
 
 
-def predict_step(engineered: pd.DataFrame, origin_keys: pd.DataFrame, routing_models: dict) -> pd.DataFrame:
+def load_evidence_groups() -> pd.Series:
+    df = pd.read_csv(EVIDENCE_GROUPS_PATH)
+    return df.set_index("company_id")["forecast_evidence_group"]
+
+
+def predict_step(
+    engineered: pd.DataFrame, origin_keys: pd.DataFrame, routing_models: dict, evidence_groups: pd.Series
+) -> pd.DataFrame:
     """`origin_keys` is one row per active company: (company_id, accounting_year)
     of the row to predict FROM. Returns the new (company_id, next_year,
     turnover, model_used, growth_classification, ...carried-forward fields)
-    rows — one per active company."""
+    rows — one per active company.
+
+    `growth_signal` (raw, from the growth features) and `growth_classification`
+    (the gated, ACTUALLY-USED-FOR-ROUTING decision) are kept as separate
+    columns — a company can show growth_signal="growing" but still get
+    routed to Persistence if its evidence_group is below the minimum (see
+    module docstring's "MINIMUM-EVIDENCE GATE" section), and that
+    distinction needs to stay visible, not collapsed into one label."""
     origin = engineered.merge(origin_keys, on=["company_id", "accounting_year"], how="inner")
-    origin["growth_classification"] = origin.apply(classify_growth, axis=1)
+    origin["growth_signal"] = origin.apply(classify_growth, axis=1)
+    origin["evidence_group"] = origin["company_id"].map(evidence_groups).fillna("D")
+    origin["growth_classification"] = np.where(
+        (origin["growth_signal"] == "growing") & (origin["evidence_group"] == MIN_EVIDENCE_GROUP_FOR_TREND_CONTINUATION),
+        "growing",
+        "stable",
+    )
 
     origin_cast = cast_categoricals(origin)
     predictions = np.full(len(origin), np.nan)
@@ -212,7 +273,7 @@ def predict_step(engineered: pd.DataFrame, origin_keys: pd.DataFrame, routing_mo
     new_rows = origin[
         ["company_id", "mission", "accounting_year", "founded_year", "sic_code_1", "value_stream",
          "total_assets", "employees", "export_revenue", "company_size",
-         "predicted_turnover", "model_used", "growth_classification"]
+         "predicted_turnover", "model_used", "growth_signal", "evidence_group", "growth_classification"]
     ].copy()
     new_rows["accounting_year"] = new_rows["accounting_year"] + 1
     new_rows["company_age"] = new_rows["accounting_year"] - new_rows["founded_year"]
@@ -222,6 +283,7 @@ def predict_step(engineered: pd.DataFrame, origin_keys: pd.DataFrame, routing_mo
 
 def run_recursive_forecast(panel: pd.DataFrame, baseline: pd.DataFrame, routing_models: dict) -> pd.DataFrame:
     panel = seed_missing_companies(panel, baseline)
+    evidence_groups = load_evidence_groups()
 
     current_year = baseline.set_index("company_id")["baseline_year"].to_dict()
     trajectory_rows = []
@@ -235,7 +297,7 @@ def run_recursive_forecast(panel: pd.DataFrame, baseline: pd.DataFrame, routing_
         )
 
         engineered, _ = build_engineered_panel(panel, baseline)
-        new_rows = predict_step(engineered, origin_keys, routing_models)
+        new_rows = predict_step(engineered, origin_keys, routing_models, evidence_groups)
 
         valid_mask = new_rows["turnover"].notna()
         n_invalid = int((~valid_mask).sum())
@@ -246,7 +308,10 @@ def run_recursive_forecast(panel: pd.DataFrame, baseline: pd.DataFrame, routing_
         new_rows_valid["step"] = step
         trajectory_rows.append(new_rows_valid.drop(columns=["founded_year"]))
 
-        panel = pd.concat([panel, new_rows_valid.drop(columns=["model_used", "growth_classification", "step"])], ignore_index=True)
+        panel = pd.concat(
+            [panel, new_rows_valid.drop(columns=["model_used", "growth_signal", "evidence_group", "growth_classification", "step"])],
+            ignore_index=True,
+        )
 
         for _, row in new_rows_valid.iterrows():
             current_year[row["company_id"]] = row["accounting_year"]
@@ -260,7 +325,7 @@ def run_recursive_forecast(panel: pd.DataFrame, baseline: pd.DataFrame, routing_
 
 
 def main() -> None:
-    for path in (ORDERED_PANEL_PATH, BASELINE_VALIDATED_PATH):
+    for path in (ORDERED_PANEL_PATH, BASELINE_VALIDATED_PATH, EVIDENCE_GROUPS_PATH):
         if not path.exists():
             raise FileNotFoundError(f"Missing {path}: run the earlier forecast_src build-order steps first.")
 
@@ -281,6 +346,10 @@ def main() -> None:
     print(f"Companies reaching 2030: {(trajectories[trajectories['accounting_year'] == FORECAST_END_YEAR]['company_id'].nunique())}")
     print("\nModel usage breakdown (all steps, all companies):")
     print(trajectories["model_used"].value_counts().to_string())
+
+    gated = (trajectories["growth_signal"] == "growing") & (trajectories["growth_classification"] == "stable")
+    print(f"\nCompany-year steps where the evidence gate downgraded growing->stable: {int(gated.sum())}")
+
     print(f"\nWrote {out_path}")
 
 
