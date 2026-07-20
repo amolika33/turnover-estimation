@@ -611,8 +611,23 @@ Separate pipeline stage, built on the completed dataset above — see
    shifted toward more Persistence (7,098 vs 6,785) — decay naturally
    cools a company's measured rate faster, so more companies settle into
    "stable" sooner than under undamped compounding.
-8. `forecast_assemble.py` — combine into final company-level 2030
-   trajectories.
+8. ✅ `forecast_assemble.py` — combines the real historical panel +
+   forecast_recursive.py's predictions into two outputs:
+   `forecast_full_trajectories.csv` (long format, one row per company-year,
+   `data_type` = observed/estimated_baseline/predicted — needed by
+   forecast_reporting.py's planned gazelle check, which must walk every
+   year-over-year transition including real pre-baseline history, not just
+   baseline-vs-2030) and `forecast_2030_summary.csv` (one row per company —
+   the "final company-level 2030 trajectories" the build order names,
+   growth_multiple_2030, annualized_growth_rate_to_2030,
+   n_years_growing/n_years_stable across the projected horizon,
+   forecast_evidence_group carried through). Validated: 12,629 trajectory
+   rows (4,095 observed + 749 estimated_baseline + 7,785 predicted, exactly
+   matching each source file's row count) across 1,222 companies, 100%
+   turnover_2030 coverage, 0 duplicate company_id. Growth multiple median
+   1.0x (flat majority) with the known outliers landing where expected
+   (SaxaVord Spaceport 22.7x, ~56%/year annualized). 203/1,222 companies
+   were classified "growing" at least once during their projection.
 9. `forecast_reporting.py` — **added to the plan, not yet built**.
    Business-facing outputs once 2030 trajectories exist from step 8:
    - **£10M-by-2030 companies**: filtered from the main forecast — companies
