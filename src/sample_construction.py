@@ -22,6 +22,10 @@ YEARS = list(range(2013, 2026))
 # Consciously accepted tradeoff: this down-weights well-documented companies
 # relative to naive equal-row weighting.
 POPULATION_TYPE_SPACE = "space"
+# Adjacent-company rows (src/adjacent_data_prep.py) — training-only, never
+# part of the inference population, always tagged so model_bakeoff.py can
+# tell them apart (space-only outer CV test folds, ADJACENT_SAMPLE_WEIGHT).
+POPULATION_TYPE_ADJACENT = "adjacent"
 
 
 def turnover_col(year: int) -> str:

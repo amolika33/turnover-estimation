@@ -64,9 +64,11 @@ from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardSc
 from sklearn.svm import SVR
 from sklearn.utils.validation import has_fit_parameter
 
+from src.adjacent_data_prep import build_all_adjacent_training_features
 from src.data_prep import COMPANY_ID_COL, prepare_source2
 from src.feature_engineering import build_features
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
+from src.sample_construction import POPULATION_TYPE_SPACE
 
 try:
     from catboost import CatBoostRegressor
@@ -83,16 +85,16 @@ TARGET_COL = "total_turnover"
 GROUP_COL = COMPANY_ID_COL
 WEIGHT_COL = "sample_weight"
 
-# NOT YET WIRED UP — no adjacent data exists to test against (see
-# ADJACENT_DATA_REQUIREMENTS.md and PROJECT_NOTES.md "Current status / build
-# order" step 3). Once adjacent rows are merged in, this should scale
-# their sample_weight down relative to space companies' inverse-frequency
-# weight (sample_construction.build_long_panel), so the model trusts
-# adjacent-company labels less. The value itself is a placeholder — to be
-# tuned empirically once adjacent data exists, by comparing candidate
-# weights (e.g. 0.2/0.5/1.0) against held-out SPACE-COMPANY-ONLY
-# validation performance, not pooled space+adjacent performance (see the
-# outer-CV note in PROJECT_NOTES.md's "Documented assumptions and thresholds").
+# WIRED UP (PROJECT_NOTES.md "Adjacent-company integration" — empirical
+# tuning section). Multiplies adjacent rows' base sample_weight (already
+# 1/company-row-count, same inverse-frequency principle as space
+# companies) at merge time in get_mission_features_with_adjacent, so the
+# model trusts adjacent-company labels less than space companies'. Tuned
+# per mission by comparing candidate weights (0.2/0.5/1.0) against
+# SPACE-COMPANY-ONLY validation performance (make_space_only_outer_splits
+# below) — see PROJECT_NOTES.md for the winning value per mission and why
+# a single global constant is a simplification (kept as the module-level
+# default; callers can override per mission).
 ADJACENT_SAMPLE_WEIGHT = 0.5
 
 LOG_NUMERIC_FEATURES = [
@@ -357,6 +359,55 @@ def make_repeated_group_kfold_splits(
     return splits
 
 
+def make_space_only_outer_splits(
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+    population_type: pd.Series,
+    n_splits: int,
+    n_repeats: int,
+    random_state: int,
+) -> list[tuple[int, int, np.ndarray, np.ndarray]]:
+    """Documented as required since early in this project (PROJECT_NOTES.md
+    "Current status / build order" step 3) but never built until adjacent
+    data actually existed to test it against. Once adjacent rows are
+    merged into training (get_mission_features_with_adjacent), a mission's
+    reported R2/MAE/RMSE must still reflect real deployment performance —
+    predicting a SPACE company's turnover — not accuracy on the auxiliary
+    adjacent-company rows the model was never meant to be graded against.
+
+    The outer GroupKFold partition is computed over space-company groups
+    ONLY (same make_repeated_group_kfold_splits as before adjacent data
+    existed). For each (repeat, fold): the test set is exactly the
+    held-out space companies' rows; the train set is the remaining space
+    companies' rows PLUS every adjacent-company row — adjacent rows are
+    never held out, so they appear in every outer training fold (adjacent
+    data contributes to training only, consistent with never being
+    evaluated). The inner CV (hyperparameter tuning, inside GridSearchCV on
+    X_train/y_train) stays pooled/unchanged — it groups by company_id
+    across whatever rows land in that fold's training set, space or
+    adjacent alike."""
+    is_space = (population_type == POPULATION_TYPE_SPACE).to_numpy()
+    space_idx = np.where(is_space)[0]
+    adjacent_idx = np.where(~is_space)[0]
+
+    space_splits = make_repeated_group_kfold_splits(
+        X.iloc[space_idx],
+        y.iloc[space_idx],
+        groups.iloc[space_idx],
+        n_splits=n_splits,
+        n_repeats=n_repeats,
+        random_state=random_state,
+    )
+
+    splits = []
+    for repeat, fold_idx, space_train_local, space_test_local in space_splits:
+        train_idx = np.concatenate([space_idx[space_train_local], adjacent_idx])
+        test_idx = space_idx[space_test_local]
+        splits.append((repeat, fold_idx, train_idx, test_idx))
+    return splits
+
+
 def evaluate_model(
     name: str,
     estimator,
@@ -423,9 +474,20 @@ def run_bakeoff(
 
     negative_log_inputs = check_negative_log_inputs(df, LOG_NUMERIC_FEATURES)
 
-    outer_splits = make_repeated_group_kfold_splits(
-        X, y, groups, n_splits=n_outer_splits, n_repeats=n_outer_repeats, random_state=RANDOM_STATE
-    )
+    # Auto-detects adjacent rows via population_type rather than requiring
+    # every call site to pass a flag: any mission_df built the old way
+    # (get_mission_features alone, space-only) is untouched, since it never
+    # has an "adjacent" population_type value to trigger this branch.
+    has_adjacent = "population_type" in df.columns and (df["population_type"] != POPULATION_TYPE_SPACE).any()
+    if has_adjacent:
+        outer_splits = make_space_only_outer_splits(
+            X, y, groups, df["population_type"], n_splits=n_outer_splits, n_repeats=n_outer_repeats,
+            random_state=RANDOM_STATE,
+        )
+    else:
+        outer_splits = make_repeated_group_kfold_splits(
+            X, y, groups, n_splits=n_outer_splits, n_repeats=n_outer_repeats, random_state=RANDOM_STATE
+        )
     inner_cv = GroupKFold(n_splits=n_inner_splits, shuffle=True, random_state=RANDOM_STATE)
 
     all_folds = []
@@ -452,6 +514,37 @@ def get_mission_features(mission: str) -> pd.DataFrame:
     segmented, _ = segment_missions(prepped, mapping)
     features, _ = build_features(segmented)
     return features[features[MISSION_COL] == mission].copy()
+
+
+def get_mission_features_with_adjacent(
+    mission: str,
+    adjacent_features_all: pd.DataFrame | None = None,
+    adjacent_sample_weight: float = ADJACENT_SAMPLE_WEIGHT,
+) -> pd.DataFrame:
+    """Concatenates a mission's space-company training rows
+    (get_mission_features, unchanged — space companies' own feature
+    build/values are untouched by this) with its adjacent-company training
+    rows (src/adjacent_data_prep.py), scaling adjacent rows' base
+    sample_weight (1/company-row-count) by adjacent_sample_weight at merge
+    time. This ONLY affects the training population: predict.py's
+    inference population (companies with no observed turnover, which get
+    an actual prediction) never reads this function and is completely
+    untouched — adjacent companies contribute training signal only, they
+    never receive their own turnover prediction, per the methodology's
+    original design.
+
+    Pass a precomputed adjacent_features_all (from
+    adjacent_data_prep.build_all_adjacent_training_features) when calling
+    this repeatedly (e.g. once per mission, or across several candidate
+    adjacent_sample_weight values during tuning) to avoid re-reading the
+    adjacent Excel files on every call — building it is the expensive
+    part; rescaling sample_weight afterward is not."""
+    space_df = get_mission_features(mission)
+    if adjacent_features_all is None:
+        adjacent_features_all = build_all_adjacent_training_features()
+    adjacent_df = adjacent_features_all[adjacent_features_all[MISSION_COL] == mission].copy()
+    adjacent_df[WEIGHT_COL] = adjacent_df[WEIGHT_COL] * adjacent_sample_weight
+    return pd.concat([space_df, adjacent_df], ignore_index=True, sort=False)
 
 
 def main() -> None:

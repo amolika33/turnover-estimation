@@ -4,12 +4,14 @@ stable company_id, mission tagging with multi-mission overlap made
 explicit, and the handful of Source-2-equivalent fields these files don't
 carry natively (SIC code, company size, company age, export revenue).
 
-This is groundwork only — see ADJACENT_DATA_REQUIREMENTS.md "Not covered
-here". It does NOT wire into sample_construction/feature_engineering/
-model_bakeoff: no adjacent row has entered training yet. Running main()
-just produces two inspectable CSVs (adjacent_static_features.csv,
-adjacent_turnover_panel.csv) for review before that larger integration
-decision is made.
+build_mission_training_features assembles the full NUMERIC_FEATURES +
+CATEGORICAL_FEATURES + TARGET_COL set model_bakeoff.py needs, per mission,
+ready to concatenate onto that mission's space-company labelled_features
+rows (see model_bakeoff.py's get_mission_features_with_adjacent for the
+actual merge — this module builds the rows, that function combines them).
+Running main() writes adjacent_training_features.csv (the merge-ready
+frame) alongside the earlier review artifacts (adjacent_static_features.csv,
+adjacent_turnover_panel.csv) for inspection.
 
 Six decisions implemented this pass (see PROJECT_NOTES.md "Adjacent-company
 groundwork" for the full write-up):
@@ -50,7 +52,9 @@ import numpy as np
 import pandas as pd
 
 from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, make_company_id
-from src.mission_segmentation import REAL_MISSIONS
+from src.feature_engineering import FEATURE_COLUMNS, build_source1_ratio_features, build_source3_features
+from src.mission_segmentation import MISSION_COL, REAL_MISSIONS
+from src.sample_construction import ID_COLS, POPULATION_TYPE_ADJACENT, check_turnover
 from forecast_src.forecast_data_prep import annualize_turnover
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -162,27 +166,56 @@ def build_static_features(df: pd.DataFrame, mission: str, overlap_lookup: pd.Dat
 
 
 def build_turnover_panel(df: pd.DataFrame) -> pd.DataFrame:
-    """Reconstructs a (company_id, year, turnover, weeks) long panel from
-    the 10 Financial Statement blocks — the adjacent-file equivalent of
-    Source 2's Total Turnover {year} columns, which don't exist here.
+    """Reconstructs a (company_id, year, turnover, weeks, total_employees,
+    balance_sheet_total_assets) long panel from the 10 Financial Statement
+    blocks — the adjacent-file equivalent of Source 2's Total Turnover
+    {year}/Total Employees {year}/Balance Sheet Total Assets {year}
+    columns, which don't exist here. `Financial Statement N - Number of
+    employees` / `- Total assets` are used as direct substitutes — checked
+    against real data before relying on them (not assumed): for the 2,377
+    space-company (company, year) rows where both a Source 1 FS value and
+    Source 2's own year-indexed value exist, Total assets matches
+    Balance Sheet Total Assets with 0.999 correlation (91% within 1%) and
+    Number of employees matches total_employees with 0.982 correlation
+    (96% within 5%) — both a good enough substitute to use directly, not
+    a like-for-like identical field.
+
     Turnover here is still raw (un-annualized) — annualize_adjacent_panel
     applies the correction afterward, once across the combined multi-
     mission panel (see its docstring for why it can't be done per-mission
-    here)."""
+    here). Employees/assets are NOT annualized (a per-statement snapshot,
+    not a flow figure like turnover — annualizing a stub period doesn't
+    apply to a point-in-time balance sheet figure)."""
     frames = []
     for i in range(1, N_STATEMENTS + 1):
         date_col = f"Financial Statement {i} - Date of accounts"
         turnover_col = f"Financial Statement {i} - Turnover"
         weeks_col = f"Financial Statement {i} - Number of weeks in the accounting year"
-        if not {date_col, turnover_col, weeks_col}.issubset(df.columns):
+        employees_col = f"Financial Statement {i} - Number of employees"
+        assets_col = f"Financial Statement {i} - Total assets"
+        needed = {date_col, turnover_col, weeks_col, employees_col, assets_col}
+        if not needed.issubset(df.columns):
             continue
-        sub = df[[COMPANY_ID_COL, date_col, turnover_col, weeks_col]].dropna(subset=[date_col]).copy()
-        sub = sub.rename(columns={date_col: "date_of_accounts", turnover_col: "turnover", weeks_col: "weeks"})
+        sub = df[[COMPANY_ID_COL, date_col, turnover_col, weeks_col, employees_col, assets_col]].dropna(
+            subset=[date_col]
+        ).copy()
+        sub = sub.rename(
+            columns={
+                date_col: "date_of_accounts",
+                turnover_col: "turnover",
+                weeks_col: "weeks",
+                employees_col: "total_employees",
+                assets_col: "balance_sheet_total_assets",
+            }
+        )
         sub["year"] = sub["date_of_accounts"].dt.year
-        frames.append(sub[[COMPANY_ID_COL, "year", "turnover", "weeks"]])
+        frames.append(
+            sub[[COMPANY_ID_COL, "year", "turnover", "weeks", "total_employees", "balance_sheet_total_assets"]]
+        )
 
+    columns = [COMPANY_ID_COL, "year", "turnover", "weeks", "total_employees", "balance_sheet_total_assets"]
     if not frames:
-        return pd.DataFrame(columns=[COMPANY_ID_COL, "year", "turnover", "weeks"])
+        return pd.DataFrame(columns=columns)
 
     allrows = pd.concat(frames, ignore_index=True).dropna(subset=["year"])
     # Statement 1 is confirmed most recent (DATA_SCHEMA.md) — iterating
@@ -190,6 +223,43 @@ def build_turnover_panel(df: pd.DataFrame) -> pd.DataFrame:
     # more recent statement wins if two statements ever resolve to the
     # same calendar year, same precedent as build_source1_ratio_features.
     return allrows.drop_duplicates(subset=[COMPANY_ID_COL, "year"])
+
+
+def build_adjacent_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Reuses feature_engineering.build_source1_ratio_features unchanged —
+    adjacent files carry the identical Financial Statement 1 ratio columns
+    (same schema, verified in the original file-validation pass), so the
+    same leakage-checked ratio selection and Statement-1 anchoring apply
+    as-is. Only the identity step differs: adjacent files already carry a
+    directly-assigned company_id (from their own 100%-populated CH ID), so
+    no Beauhurst-URL lookup is needed the way space companies require."""
+    ratios = build_source1_ratio_features(df)
+    ratios[COMPANY_ID_COL] = df.loc[ratios.index, COMPANY_ID_COL]
+    return ratios.drop(columns="_url_norm")
+
+
+def build_adjacent_source3_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Reuses feature_engineering.build_source3_features unchanged — same
+    reasoning as build_adjacent_ratio_features. Company-constant (not
+    year-anchored): recency relative to each panel row's year is added
+    separately by add_recency below, same split as merge_source3_features."""
+    signals = build_source3_features(df)
+    signals[COMPANY_ID_COL] = df.loc[signals.index, COMPANY_ID_COL]
+    return signals.drop(columns="_url_norm")
+
+
+def add_recency(panel: pd.DataFrame) -> pd.DataFrame:
+    """Same recency-relative-to-row-year logic as
+    feature_engineering.merge_source3_features's tail: a grant/fundraising
+    dated after a given panel row's year hasn't happened yet from that
+    row's point of view, so it's nulled rather than left as a
+    leakage-implying negative recency."""
+    panel = panel.copy()
+    panel["grant_recency_years"] = panel["year"] - panel["_grants_latest_date"].dt.year
+    panel.loc[panel["grant_recency_years"] < 0, "grant_recency_years"] = np.nan
+    panel["fundraising_recency_years"] = panel["year"] - panel["_fundraising_latest_date"].dt.year
+    panel.loc[panel["fundraising_recency_years"] < 0, "fundraising_recency_years"] = np.nan
+    return panel.drop(columns=["_grants_latest_date", "_fundraising_latest_date"])
 
 
 def annualize_adjacent_panel(panel_all: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -220,6 +290,106 @@ def annualize_adjacent_panel(panel_all: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     df_for_annualize = panel_all.drop(columns=["weeks"])
     adjusted, log = annualize_turnover(df_for_annualize, "turnover", "year", factors, id_col=COMPANY_ID_COL)
     return adjusted, log
+
+
+def build_mission_training_features(
+    mission: str, raw_df: pd.DataFrame, annualized_panel: pd.DataFrame, overlap_lookup: pd.DataFrame
+) -> pd.DataFrame:
+    """Assembles one row per (company_id, year) adjacent-company training
+    example for `mission`, with every column model_bakeoff.py's
+    NUMERIC_FEATURES + CATEGORICAL_FEATURES + TARGET_COL + GROUP_COL +
+    WEIGHT_COL + MISSION_COL + population_type expects — built to be
+    concatenated directly onto that mission's space-company
+    labelled_features rows (mismatched columns, e.g. total_employees_ch/
+    founded_year which adjacent data has no equivalent of, are left for
+    pandas.concat to fill with NaN; nothing downstream reads those on the
+    adjacent side).
+
+    `annualized_panel` must already be the 3-mission-combined, annualized
+    turnover panel (see annualize_adjacent_panel) filtered to this mission
+    — annualization cannot be done per-mission in isolation because of the
+    multi-mission-overlap duplication (decision 2).
+
+    sample_weight here is the UNSCALED base weight (1 / that company's row
+    count within this mission, same inverse-frequency principle as
+    sample_construction.build_long_panel for space companies) —
+    ADJACENT_SAMPLE_WEIGHT is applied later, at merge/bake-off time, so
+    tuning it doesn't require rebuilding these Excel-derived features."""
+    panel = annualized_panel.rename(columns={"turnover": "total_turnover"}).drop(columns=["mission"])
+
+    ratios = build_adjacent_ratio_features(raw_df)
+    panel = panel.merge(ratios, on=[COMPANY_ID_COL, "year"], how="left")
+
+    signals = build_adjacent_source3_features(raw_df)
+    panel = panel.merge(signals, on=COMPANY_ID_COL, how="left")
+    panel = add_recency(panel)
+
+    static = build_static_features(raw_df, mission, overlap_lookup)
+    static_cols = [
+        COMPANY_ID_COL,
+        NAME_COL,
+        URL_COL,
+        CH_COL,
+        "sic_code_1",
+        "company_age_years",
+        "total_export_revenue",
+        "multi_mission_overlap",
+    ]
+    panel = panel.merge(static[static_cols], on=COMPANY_ID_COL, how="left")
+
+    # company_size is recomputed per (company_id, year) from this row's own
+    # total_employees value, NOT taken from build_static_features' single
+    # FS1 snapshot — matches how space companies get a year-varying
+    # company_size from Size {year}, rather than one static value repeated
+    # across every year.
+    panel["company_size"] = build_company_size(panel["total_employees"])
+    # No substitute exists for Value Stream anywhere in the adjacent
+    # export (checked in the original file-validation pass) — left null,
+    # same treatment as company_age_years/total_export_revenue.
+    panel["value_stream"] = np.nan
+    panel["employee_count_source"] = pd.NA
+    panel.loc[panel["total_employees"].notna(), "employee_count_source"] = "filed"
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        panel["assets_per_employee"] = panel["balance_sheet_total_assets"] / panel["total_employees"]
+        panel["export_revenue_per_employee"] = panel["total_export_revenue"] / panel["total_employees"]
+    panel["assets_per_employee"] = panel["assets_per_employee"].replace([np.inf, -np.inf], np.nan)
+    panel["export_revenue_per_employee"] = panel["export_revenue_per_employee"].replace([np.inf, -np.inf], np.nan)
+
+    panel[MISSION_COL] = mission
+    panel["population_type"] = POPULATION_TYPE_ADJACENT
+    panel["sample_weight"] = 1.0 / panel.groupby(COMPANY_ID_COL)[COMPANY_ID_COL].transform("count")
+
+    panel, turnover_quality_log = check_turnover(panel, col="total_turnover")
+    panel = panel[panel["total_turnover"].notna()].copy()
+
+    return panel, turnover_quality_log
+
+
+def build_all_adjacent_training_features() -> pd.DataFrame:
+    """Runs the full pipeline (load raw files, assign company_id, build
+    the turnover panel, annualize it once across all 3 missions, then
+    build each mission's full training-feature set) and returns ONE
+    concatenated dataframe across all 3 missions.
+
+    sample_weight is left as the UNSCALED base weight (1 / company row
+    count) — model_bakeoff.get_mission_features_with_adjacent applies
+    ADJACENT_SAMPLE_WEIGHT at merge time, so this Excel-derived build
+    (the expensive part) only needs to run once regardless of how many
+    candidate weights get tried."""
+    raw = {mission: assign_company_id(load_adjacent_source(mission)) for mission in REAL_MISSIONS}
+    overlap_lookup = compute_multi_mission_overlap(raw)
+
+    panel_frames = [build_turnover_panel(raw[mission]).assign(mission=mission) for mission in REAL_MISSIONS]
+    panel_all = pd.concat(panel_frames, ignore_index=True)
+    panel_all, _ = annualize_adjacent_panel(panel_all)
+
+    feature_frames = []
+    for mission in REAL_MISSIONS:
+        panel_m = panel_all[panel_all["mission"] == mission].copy()
+        features_m, _ = build_mission_training_features(mission, raw[mission], panel_m, overlap_lookup)
+        feature_frames.append(features_m)
+    return pd.concat(feature_frames, ignore_index=True)
 
 
 def main() -> None:
@@ -277,6 +447,36 @@ def main() -> None:
     print(f"\nWrote {static_path} ({len(static_all)} rows, {static_all[COMPANY_ID_COL].nunique()} distinct companies)")
     print(f"Wrote {panel_path} ({len(panel_all)} rows, turnover now annualized)")
     print(f"Wrote {log_path} ({len(annualization_log)} corrected rows)")
+
+    # Stage 1: full per-mission training-feature parity (see
+    # build_mission_training_features) — the actual rows that will merge
+    # into each mission's training population (task: real integration).
+    print("\n=== Full training-feature build (per mission) ===")
+    feature_frames = []
+    quality_logs = []
+    for mission in REAL_MISSIONS:
+        panel_m = panel_all[panel_all["mission"] == mission].copy()
+        features_m, quality_log_m = build_mission_training_features(mission, raw[mission], panel_m, overlap_lookup)
+        feature_frames.append(features_m)
+        quality_logs.append(quality_log_m)
+
+        missing_expected = [c for c in FEATURE_COLUMNS if c not in features_m.columns]
+        print(f"\n{mission}: {len(features_m)} training rows, {features_m[COMPANY_ID_COL].nunique()} companies")
+        print(f"  Missing expected feature columns: {missing_expected or 'none'}")
+        print(f"  Turnover values nulled/excluded by check_turnover: {len(quality_log_m)}")
+        for c in FEATURE_COLUMNS:
+            if c in features_m.columns:
+                print(f"  {c:<28} non-null: {features_m[c].notna().sum()}/{len(features_m)}")
+
+    features_all = pd.concat(feature_frames, ignore_index=True)
+    quality_log_all = pd.concat(quality_logs, ignore_index=True) if quality_logs else pd.DataFrame()
+
+    features_path = OUTPUT_DIR / "adjacent_training_features.csv"
+    quality_log_path = OUTPUT_DIR / "adjacent_turnover_quality_log.csv"
+    features_all.to_csv(features_path, index=False)
+    quality_log_all.to_csv(quality_log_path, index=False)
+    print(f"\nWrote {features_path} ({len(features_all)} rows)")
+    print(f"Wrote {quality_log_path} ({len(quality_log_all)} rows)")
 
 
 if __name__ == "__main__":
