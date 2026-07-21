@@ -772,3 +772,16 @@ Separate pipeline stage, built on the completed dataset above — see
         wider); step 6-7 (2030): 99x vs ~1.68 million x. Confirms Group A
         bands are visibly, dramatically tighter than Group D's, as
         intended.
+    - **`dashboard.py`**: Streamlit company explorer (`streamlit run
+      dashboard.py`, no setup beyond `pip install -r requirements.txt` —
+      `streamlit`/`plotly`/`openpyxl` added there). Search by name or CH
+      number; Plotly chart with solid observed/baseline turnover, dashed
+      forecast to 2030, and the shaded confidence band above; a summary
+      panel (mission, evidence group, baseline source, real-years count,
+      2030 forecast/multiple/annualized rate, and all 5
+      `forecast_reporting.py` flags including £50M credibility status);
+      a data-provenance breakdown and full year-by-year table. Reads only
+      already-computed CSVs, no recomputation. Verified: server starts
+      cleanly (HTTP 200, no exceptions), and the underlying data logic
+      (company lookup, trajectory split, summary fields, flag membership)
+      tested directly against Air Liquide with correct results.
