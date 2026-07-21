@@ -380,9 +380,57 @@ top 6 (or top 23) into an "other"/"infrequent" category — the same
   Agency Accelerator and ESA BIC UK) or whether a single "which one"
   categorical forces an arbitrary pick.
 
-**Recommendation**: worth pursuing as a follow-on feature-engineering pass
-(not urgent — Part 3 already shows the existing aggregate accelerator
-features carry only marginal, inconsistent signal) — but do it with the
-top-6-or-top-23 bucketed approach, not a raw 133-category one-hot, and
-re-check the life-stage confound once built rather than assuming the
-finer-grained version behaves differently from the aggregate version.
+**Recommendation (superseded by the confound check below — see that
+section's revised recommendation)**: worth pursuing as a follow-on
+feature-engineering pass (not urgent — Part 3 already shows the existing
+aggregate accelerator features carry only marginal, inconsistent signal)
+— but do it with the top-6-or-top-23 bucketed approach, not a raw
+133-category one-hot, and re-check the life-stage confound once built
+rather than assuming the finer-grained version behaves differently from
+the aggregate version.
+
+### Life-stage confound check, done *before* building (checked directly, not assumed)
+
+The life-stage confound flagged above as a risk to "check directly once
+built" was instead checked first, per instruction, before writing any
+feature code. For each of the 3 real missions, split all companies
+(labelled + inference population together, so the comparison isn't
+restricted to the ~367 companies with observed turnover) into "attended
+at least one of the 6 well-represented accelerators" (109 distinct
+companies total) vs. "did not," and compared `company_age_years`
+(`2026 - Founded`) and forecast evidence group (A = 3+ real turnover
+years, B = 2, C = 1, D = 0 — the forecasting pipeline's own data-quality
+tiering, `data/processed/forecast_evidence_groups.csv`):
+
+| Mission | Attendees: mean / median age | Non-attendees: mean / median age | Attendees in group D (no observed turnover) | Non-attendees in group D |
+|---|---|---|---|---|
+| ACE | 8.2 / 9 yrs (n=14) | 26.0 / 20 yrs (n=181) | 85.7% | 56.9% |
+| Beyond Earth | 8.1 / 7 yrs (n=52) | 39.1 / 27.5 yrs (n=406) | 94.2% | 51.1% |
+| Resilient Earth | 6.2 / 5 yrs (n=25) | 24.4 / 13 yrs (n=238) | 92.0% | 65.4% |
+
+**The skew is real, large, and consistent across all 3 missions.**
+Attendees of the 6 well-represented accelerators are roughly a **third to
+a quarter the age** of non-attendees (medians: 9 vs 20, 7 vs 27.5, 5 vs
+13), and are disproportionately concentrated in evidence group D — the
+tier with **zero** observed turnover years at all, i.e. the inference-only
+population a model never trains against. In Beyond Earth, 94% of
+attendees have no observed turnover whatsoever, vs. 51% of non-attendees.
+
+This confirms the exact concern flagged as a risk above, and more sharply
+than the aggregate `accelerator_count` feature already showed it: a
+specific-accelerator flag built today would be learning almost entirely
+from the small, young, evidence-poor slice of each mission, and — because
+so few attendees have any real turnover outcome to train against in the
+first place — would have very little genuine (accelerator, turnover)
+signal available to learn from independent of age. It would very likely
+be re-encoding "young, early-stage, no filing history yet" rather than
+telling the model something new about that specific programme.
+
+**Revised recommendation: do not build the specific-accelerator feature
+now.** The confound isn't a modest risk to monitor after the fact — it's
+large enough, and the attendee population thin enough on real turnover
+outcomes, that the feature is unlikely to add signal beyond what
+`company_age_years` and the existing evidence-group tiering already
+capture. Revisit only if the labelled (observed-turnover) population
+grows enough for a specific accelerator to have a meaningful number of
+non-D-group attendees to learn from.
