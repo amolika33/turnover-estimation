@@ -68,6 +68,13 @@ from src.data_prep import COMPANY_ID_COL, prepare_source2
 from src.feature_engineering import build_features
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
 
+try:
+    from catboost import CatBoostRegressor
+
+    CATBOOST_AVAILABLE = True
+except ImportError:
+    CATBOOST_AVAILABLE = False
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
 
@@ -122,6 +129,24 @@ PLAIN_NUMERIC_FEATURES = [
     "signal_patent",
     "has_attended_accelerator",
     "is_academic_spinout",
+    # Source 1 (Financial Statement 1) balance-sheet ratios — see
+    # feature_engineering.py's SOURCE1_SAFE_RATIO_COLUMNS for the
+    # formula-reconstruction leakage check. NOT log-transformed: unlike
+    # LOG_NUMERIC_FEATURES (employees/assets/revenue, non-negative by
+    # definition), these are ratios/percentages that can be legitimately
+    # very negative (e.g. Total debt ratio observed down to -659, Current
+    # debt ratio down to -106 in the raw data) — well below log1p's x > -1
+    # domain, so plain median-impute (+ scaling for scale-sensitive models)
+    # is the correct treatment, same as assets_per_employee-style ratios.
+    "fs1_current_ratio",
+    "fs1_liquidity_acid_test",
+    "fs1_gearing_pct",
+    "fs1_equity_pct",
+    "fs1_current_debt_ratio",
+    "fs1_total_debt_ratio",
+    "fs1_roce_pct",
+    "fs1_rota_pct",
+    "fs1_ronae_pct",
 ]
 NUMERIC_FEATURES = PLAIN_NUMERIC_FEATURES + LOG_NUMERIC_FEATURES
 CATEGORICAL_FEATURES = [
@@ -177,6 +202,32 @@ MODELS = {
         {"model__regressor__n_neighbors": [3, 5, 10, 15], "model__regressor__weights": ["uniform", "distance"]},
     ),
 }
+if CATBOOST_AVAILABLE:
+    # Native categorical handling is the entire point of adding CatBoost here
+    # (CLAUDE.md: "specifically relevant to ACE's high-cardinality SIC code
+    # instability"). cat_features tells CatBoost which columns to treat as
+    # categories internally — this only pays off if those columns reach it
+    # UN-one-hot-encoded, which is why build_catboost_preprocessor() (below)
+    # exists as a separate path from build_preprocessor(): reusing the
+    # standard OneHotEncoder pipeline here would silently turn this into
+    # "just another tree ensemble," the same high-cardinality one-hot
+    # bucketing every other model already gets, defeating the reason it was
+    # requested.
+    #
+    # cat_features is NOT set as a constructor kwarg (tried first, rejected):
+    # sklearn's clone() — used internally by GridSearchCV/TransformedTargetRegressor
+    # on every fold — raises `RuntimeError: Cannot clone object ... constructor
+    # either does not set or modifies parameter cat_features`, a known
+    # CatBoost/sklearn get_params round-trip incompatibility. Fixed by passing
+    # cat_features as a FIT-time parameter instead (CATBOOST_FIT_KWARGS,
+    # threaded through the same "model__<param>" fit_params mechanism already
+    # used for sample_weight) — CatBoostRegressor.fit() accepts cat_features
+    # directly, so the constructor stays clone-safe.
+    MODELS["CatBoost"] = (
+        CatBoostRegressor(random_state=RANDOM_STATE, verbose=False),
+        {"model__regressor__depth": [4, 6], "model__regressor__learning_rate": [0.05, 0.1]},
+    )
+CATBOOST_FIT_KWARGS = {"model__cat_features": CATEGORICAL_FEATURES}
 
 
 def _cast_value(v):
@@ -240,6 +291,47 @@ def build_preprocessor(scale: bool) -> ColumnTransformer:
     )
 
 
+def build_catboost_preprocessor() -> ColumnTransformer:
+    """CatBoost gets its own preprocessor, not build_preprocessor(scale=False):
+    numeric columns get the identical log1p/impute treatment every other
+    model gets (so the bake-off comparison isolates the algorithm, not a
+    feature-engineering difference), but categorical columns are only
+    missing-imputed, never one-hot encoded — CatBoostRegressor's
+    cat_features=CATEGORICAL_FEATURES (set at construction in MODELS) reads
+    them natively instead. set_output(transform="pandas") keeps column names
+    intact through the ColumnTransformer so CatBoost's cat_features can
+    reference them by name rather than a fragile positional index."""
+    plain_numeric_pipeline = Pipeline([("imputer", SimpleImputer(strategy="median"))])
+    log_numeric_pipeline = Pipeline(
+        [
+            ("log1p", FunctionTransformer(np.log1p, feature_names_out="one-to-one")),
+            ("imputer", SimpleImputer(strategy="median")),
+        ]
+    )
+    categorical_pipeline = Pipeline([("imputer", SimpleImputer(strategy="constant", fill_value="missing"))])
+    preprocessor = ColumnTransformer(
+        [
+            ("plain_numeric", plain_numeric_pipeline, PLAIN_NUMERIC_FEATURES),
+            ("log_numeric", log_numeric_pipeline, LOG_NUMERIC_FEATURES),
+            ("categorical", categorical_pipeline, CATEGORICAL_FEATURES),
+        ],
+        verbose_feature_names_out=False,
+    )
+    preprocessor.set_output(transform="pandas")
+    return preprocessor
+
+
+def get_preprocessor(name: str) -> ColumnTransformer:
+    """Single place that decides which preprocessor a given model name gets —
+    used by both evaluate_model (bake-off) and model_selection.fit_final_model
+    (final refit), so a CatBoost winner is refit with the same native-
+    categorical preprocessing it was evaluated with, not silently downgraded
+    to the one-hot path at refit time."""
+    if name == "CatBoost":
+        return build_catboost_preprocessor()
+    return build_preprocessor(scale=name in SCALE_SENSITIVE)
+
+
 def make_repeated_group_kfold_splits(
     X: pd.DataFrame, y: pd.Series, groups: pd.Series, n_splits: int, n_repeats: int, random_state: int
 ) -> list[tuple[int, int, np.ndarray, np.ndarray]]:
@@ -268,7 +360,7 @@ def evaluate_model(
     outer_splits: list[tuple[int, int, np.ndarray, np.ndarray]],
     inner_cv,
 ) -> list[dict]:
-    preprocessor = build_preprocessor(scale=name in SCALE_SENSITIVE)
+    preprocessor = get_preprocessor(name)
     fold_rows = []
     for repeat, fold_idx, train_idx, test_idx in outer_splits:
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
@@ -290,6 +382,8 @@ def evaluate_model(
         fit_kwargs = {"groups": groups_train}
         if has_fit_parameter(estimator, "sample_weight"):
             fit_kwargs["model__sample_weight"] = w_train.to_numpy()
+        if name == "CatBoost":
+            fit_kwargs.update(CATBOOST_FIT_KWARGS)
         search.fit(X_train, y_train, **fit_kwargs)
 
         y_pred = search.best_estimator_.predict(X_test)

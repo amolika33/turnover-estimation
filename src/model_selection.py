@@ -57,6 +57,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.utils.validation import has_fit_parameter
 
 from src.model_bakeoff import (
+    CATBOOST_FIT_KWARGS,
     CATEGORICAL_FEATURES,
     GROUP_COL,
     MODELS,
@@ -66,9 +67,9 @@ from src.model_bakeoff import (
     SCALE_SENSITIVE,
     TARGET_COL,
     WEIGHT_COL,
-    build_preprocessor,
     cast_categoricals,
     get_mission_features,
+    get_preprocessor,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -101,6 +102,13 @@ SIMPLICITY_RANK = {
     "Gradient Boosting": 5,
     "Random Forest": 5,
     "Extra Trees": 5,
+    # One tier above the sklearn tree ensembles: not more complex as a model
+    # class (still gradient-boosted trees), but it's an extra third-party
+    # dependency (not part of scikit-learn) and its native categorical
+    # handling (build_catboost_preprocessor) makes it a genuinely different,
+    # less-standard preprocessing path than every other candidate — both
+    # reasons to rank it least simple among the tree-based models on a tie.
+    "CatBoost": 6,
 }
 
 
@@ -194,7 +202,7 @@ def fit_final_model(mission_df: pd.DataFrame, model_name: str, n_splits: int = 5
     weights = df[WEIGHT_COL]
 
     estimator, param_grid = MODELS[model_name]
-    preprocessor = build_preprocessor(scale=model_name in SCALE_SENSITIVE)
+    preprocessor = get_preprocessor(model_name)
     target_model = TransformedTargetRegressor(regressor=estimator, func=np.log1p, inverse_func=np.expm1)
     pipe = Pipeline([("preprocess", preprocessor), ("model", target_model)])
 
@@ -204,6 +212,8 @@ def fit_final_model(mission_df: pd.DataFrame, model_name: str, n_splits: int = 5
     fit_kwargs = {"groups": groups}
     if has_fit_parameter(estimator, "sample_weight"):
         fit_kwargs["model__sample_weight"] = weights.to_numpy()
+    if model_name == "CatBoost":
+        fit_kwargs.update(CATBOOST_FIT_KWARGS)
     search.fit(X, y, **fit_kwargs)
 
     return search.best_estimator_, search.best_params_

@@ -31,17 +31,17 @@ from sklearn.utils.validation import has_fit_parameter
 from src.data_prep import COMPANY_ID_COL, NAME_COL
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS
 from src.model_bakeoff import (
+    CATBOOST_FIT_KWARGS,
     CATEGORICAL_FEATURES,
     GROUP_COL,
     MODELS,
     NUMERIC_FEATURES,
     RANDOM_STATE,
-    SCALE_SENSITIVE,
     TARGET_COL,
     WEIGHT_COL,
-    build_preprocessor,
     cast_categoricals,
     get_mission_features,
+    get_preprocessor,
     make_repeated_group_kfold_splits,
 )
 
@@ -171,7 +171,7 @@ def generate_oof_predictions(mission: str) -> pd.DataFrame:
         X, y, groups, n_splits=OUTER_N_SPLITS, n_repeats=OUTER_N_REPEATS, random_state=RANDOM_STATE
     )
     inner_cv = GroupKFold(n_splits=INNER_N_SPLITS, shuffle=True, random_state=RANDOM_STATE)
-    preprocessor = build_preprocessor(scale=model_name in SCALE_SENSITIVE)
+    preprocessor = get_preprocessor(model_name)
 
     preds_accum: dict = {}
     for _repeat, _fold_idx, train_idx, test_idx in outer_splits:
@@ -186,6 +186,8 @@ def generate_oof_predictions(mission: str) -> pd.DataFrame:
         fit_kwargs = {"groups": groups_train}
         if has_fit_parameter(estimator, "sample_weight"):
             fit_kwargs["model__sample_weight"] = w_train.to_numpy()
+        if model_name == "CatBoost":
+            fit_kwargs.update(CATBOOST_FIT_KWARGS)
         search.fit(X_train, y_train, **fit_kwargs)
 
         y_pred = search.best_estimator_.predict(X_test)
