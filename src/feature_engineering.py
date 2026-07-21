@@ -1,7 +1,9 @@
 """Build company characteristics, financial indicators, and categorical
-features for the labelled panel. Composite indicators and commercial-activity
-features (grants, funding, accelerators — Source 1 only, not merged yet) are
-deferred to a later pass. Nothing here may be derived from `total_turnover`:
+features for the labelled panel. Composite indicators are deferred to a
+later pass. Commercial-activity features (grants, funding, accelerators —
+Source 3) and Source 1's Financial Statement 1 balance-sheet ratios
+(SOURCE1_SAFE_RATIO_COLUMNS below) are both merged in. Nothing here may be
+derived from `total_turnover`:
 that population's inference companies have no turnover history at all, so a
 turnover-derived feature would be unusable for exactly the rows that need
 predicting, and it would leak the target besides.
@@ -29,6 +31,7 @@ from src.sample_construction import ID_COLS, YEARS, construct_samples
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
+SOURCE1_PATH = REPO_ROOT / "data" / "raw" / "beauhurst_company_export_20260709-115139.csv.xlsx"
 SOURCE3_PATH = REPO_ROOT / "data" / "raw" / "beauhurst_company_export_20260720-092535.csv.xlsx"
 
 STATIC_COLS = {
@@ -66,6 +69,75 @@ SOURCE3_SAFE_BOOLEAN_SIGNALS = {
     "Innovation signals - Patent": "signal_patent",
 }
 
+# Source 1 (raw Beauhurst financials, same file as the Statement-1-anchoring
+# check in DATA_SCHEMA.md) has ~20 financial ratios per Financial Statement
+# block. Only Financial Statement 1 (confirmed most recent filing) is used —
+# same anchoring convention as everywhere else this file touches Source 1.
+#
+# Two-tier leakage check performed against real data (not assumed) before
+# including any of these: for each candidate ratio, reconstructed it from
+# its own component columns (e.g. Pretax profit / Turnover) and compared to
+# the actual column. 6 ratios reconstruct EXACTLY (or near-exactly) from a
+# formula that divides by `Financial Statement 1 - Turnover` — i.e. they ARE
+# Total Turnover in disguise (a company's turnover is algebraically
+# recoverable from the ratio + its numerator), forbidden outright by the
+# project's no-turnover-derivation rule regardless of how indirect the
+# derivation looks:
+#   - Pretax profit margin (%)   = Pretax profit / Turnover * 100 (exact)
+#   - Debtor days                = Trade debtors / Turnover * 365 (exact)
+#   - Creditor days              = Trade creditors / Turnover * 365 (exact)
+#   - Exports turnover ratio (%) = Direct exports / Turnover * 100 (exact)
+#   - Sales networking capital   = Turnover / Working capital (exact)
+#   - Stock turnover ratio (%)   = formula not exactly reconstructed (needs
+#     an averaged-stock figure this dataset doesn't carry), but "stock
+#     turnover" is a standard accounting term defined as Sales/Turnover
+#     divided by average stock — excluded on definitional grounds per the
+#     project's "exclude when in doubt" precedent (same treatment as the
+#     Beauhurst scaleup flags in DROPPED_COLUMNS below).
+#
+# The remaining 9 are confirmed balance-sheet-only ratios (no Turnover
+# column anywhere in their reconstruction, and near-zero raw/log correlation
+# with Turnover — a weak signal on its own, but consistent with the formula
+# evidence, not contradicting it):
+#   - Current ratio                       = Current assets / Current liabilities (exact)
+#   - Liquidity acid test                 = (Current assets - Stock) / Current liabilities (exact)
+#   - Gearing (%)                         = LT bank loans & liabilities / Shareholder funds * 100 (exact)
+#   - Equity (%)                          = Shareholder funds / Total assets * 100 (exact)
+#   - Return on capital employed (%)      = Operating profit / Capital employed * 100 (approx, ~8% median rel. diff — a
+#                                            different profit measure than the exact formula, but never Turnover)
+#   - Return on total assets employed (%) = Operating profit / Total assets * 100 (approx, same caveat)
+#   - Return on net assets employed (%)   = Operating profit / Net assets * 100 (approx, same caveat)
+#   - Current debt ratio / Total debt ratio: exact formula not pinned (likely
+#     scaled against Shareholder funds given the extreme skew from near-zero
+#     equity denominators — same shape as Gearing (%)'s blow-ups), but every
+#     Turnover-based reconstruction tried failed by 1-2 orders of magnitude,
+#     and raw/log correlation with Turnover (~0.00-0.01) is far weaker than
+#     the confirmed-leaky ratios above (e.g. Creditor days: log-corr 0.36) —
+#     accepted as safe leverage ratios, standard accounting definitions for
+#     both terms are balance-sheet-only (liabilities relative to assets),
+#     never revenue-based.
+#
+# Coverage (out of 1,372 Source 1 rows): the 4 balance-sheet ratios sourced
+# from the "Financial Statement 1 - Gearing (%)" family (Current ratio,
+# Liquidity acid test, Current debt ratio, Total debt ratio) and the
+# Gearing/Equity pair are 90.8-94.8% populated — a meaningfully large,
+# reliable tier. The 3 ROCE/ROTA/return-on-net-assets ratios are populated
+# for only ~30.8-30.9% of rows (still far above the "not just 1-2%" bar the
+# task set, but a visibly sparser tier — SimpleImputer(median) in
+# model_bakeoff.py's preprocessor handles the missingness the same way it
+# already handles every other partially-populated numeric feature).
+SOURCE1_SAFE_RATIO_COLUMNS = {
+    "Current ratio": "fs1_current_ratio",
+    "Liquidity acid test": "fs1_liquidity_acid_test",
+    "Gearing (%)": "fs1_gearing_pct",
+    "Equity (%)": "fs1_equity_pct",
+    "Current debt ratio": "fs1_current_debt_ratio",
+    "Total debt ratio": "fs1_total_debt_ratio",
+    "Return on capital employed (%)": "fs1_roce_pct",
+    "Return on total assets employed (%)": "fs1_rota_pct",
+    "Return on net assets employed (%)": "fs1_ronae_pct",
+}
+
 SOURCE3_ACCELERATOR_NAME_COLS = [f"Accelerator Attendances {i} - Accelerator Name" for i in range(1, 6)]
 SOURCE3_SPINOUT_NAME_COLS = [f"Academic Spinout Events {i} - Academic Institution Name" for i in range(1, 3)]
 
@@ -91,6 +163,15 @@ DROPPED_COLUMNS = {
     "Growth signals - Accelerator": "~100% redundant with derived has_attended_accelerator (1 disagreement out of 1,372 rows) — kept the derived version, it's clearer to explain (built from an explicit date/name slot, not an opaque platform flag)",
     "Innovation signals - Academic spinout": "~100% redundant with derived is_academic_spinout (0 disagreements out of 1,372 rows) — same reasoning as Growth signals - Accelerator",
     "LinkedIn Industry": "raw, externally-scraped LinkedIn classification, not part of the project's own deliberate mission/industry taxonomy — Value Stream and SIC Code 1 already cover company categorisation more reliably (curated for this project specifically) and overlap heavily with what LinkedIn Industry captures. Also one of the two high-cardinality columns (158 categories) that caused the original linear-model numerical instability (Linear Regression/Ridge/Elastic Net blowing up to 1e83+, see model_bakeoff.py's module docstring) before min_frequency bucketing was added — removing it outright is more robust than continuing to rely on that bucketing to contain it.",
+    # Source 1 (Financial Statement 1) ratios excluded as turnover-derived —
+    # see SOURCE1_SAFE_RATIO_COLUMNS's module comment for the full
+    # formula-reconstruction proof against real data.
+    "Financial Statement 1 - Pretax profit margin (%)": "turnover-derived (verified: = Pretax profit / Turnover * 100, exact reconstruction) — forbidden by the no-target-leakage rule",
+    "Financial Statement 1 - Debtor days": "turnover-derived (verified: = Trade debtors / Turnover * 365, exact reconstruction) — forbidden",
+    "Financial Statement 1 - Creditor days": "turnover-derived (verified: = Trade creditors / Turnover * 365, exact reconstruction — not Cost of sales, despite the name) — forbidden",
+    "Financial Statement 1 - Exports turnover ratio (%)": "turnover-derived (verified: = Direct exports / Turnover * 100, exact reconstruction) — forbidden",
+    "Financial Statement 1 - Sales networking capital": "turnover-derived (verified: = Turnover / Working capital, exact reconstruction, despite the non-obvious name) — forbidden",
+    "Financial Statement 1 - Stock turnover ratio (%)": "exact reconstruction not confirmed (needs an averaged-stock figure not present in this dataset), but 'stock turnover ratio' is a standard accounting term defined as Sales/Turnover over average stock — excluded on definitional grounds per the project's exclude-when-in-doubt precedent (same treatment as the Beauhurst scaleup flags above)",
 }
 
 FEATURE_COLUMNS = [
@@ -115,7 +196,7 @@ FEATURE_COLUMNS = [
     "fundraising_count",
     "fundraising_total_amount",
     "fundraising_recency_years",
-]
+] + list(SOURCE1_SAFE_RATIO_COLUMNS.values())
 
 
 def _melt_year_indexed(segmented_df: pd.DataFrame, prefix_fmt: str, out_col: str) -> pd.DataFrame:
@@ -171,19 +252,77 @@ def build_source3_features(src3: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _source3_url_to_company_id(segmented_df: pd.DataFrame) -> pd.DataFrame:
-    """Source 3 has no CH number of its own, so it can't be tagged with
-    company_id directly — join by normalised Beauhurst URL instead, same
-    approach as the original Source1/Source2 join (DATA_SCHEMA.md). Known
-    limitation: segmented_df has 6 rows where two different company_ids
-    share the same Beauhurst URL (the shared-CH-number-anomaly cases) —
-    drop_duplicates here means one of those company_ids silently gets no
-    Source 3 features rather than both getting the same (possibly wrong)
-    ones. Affects at most 6 companies; not resolved further this pass."""
+def _url_to_company_id(segmented_df: pd.DataFrame) -> pd.DataFrame:
+    """Shared by Source 1 (financial ratios) and Source 3 (grants/funding) —
+    neither has a CH number of its own, so both join by normalised Beauhurst
+    URL instead, same approach as the original Source1/Source2 join
+    (DATA_SCHEMA.md). Known limitation: segmented_df has 6 rows where two
+    different company_ids share the same Beauhurst URL (the
+    shared-CH-number-anomaly cases) — drop_duplicates here means one of
+    those company_ids silently gets no Source 1/3 features rather than both
+    getting the same (possibly wrong) ones. Affects at most 6 companies; not
+    resolved further this pass."""
     lookup = segmented_df[[URL_COL, COMPANY_ID_COL]].copy()
     lookup["_url_norm"] = lookup[URL_COL].apply(_normalize_url)
     lookup = lookup.dropna(subset=["_url_norm"]).drop_duplicates(subset="_url_norm")
     return lookup[["_url_norm", COMPANY_ID_COL]]
+
+
+def load_source1(path: Path = SOURCE1_PATH) -> pd.DataFrame:
+    return pd.read_excel(path, sheet_name=0)
+
+
+def build_source1_ratio_features(src1: pd.DataFrame) -> pd.DataFrame:
+    """Financial Statement 1's ratios are a single snapshot anchored to one
+    accounting date (`Financial Statement 1 - Date of accounts`), not a
+    company-constant fact like founded_year — unlike Source 3's grant/
+    fundraising signals (which describe cumulative-to-export-date history
+    and are attached to every panel row), these ratios are only true for the
+    ONE panel year that matches that snapshot. Returned with an explicit
+    `year` column so merge_source1_ratio_features can join on
+    (company_id, year) rather than company_id alone, leaving every other
+    year's value null (for model_bakeoff.py's imputer to fill), exactly the
+    same "year-anchored, not carried across years" principle
+    DATA_SCHEMA.md's Statement-1-anchoring section already established.
+
+    DELIBERATE TRADEOFF, checked against real data: attaching Statement 1's
+    ratio to every year of a company's panel (like Source 3's boolean
+    signals) would have raised row-level coverage a lot, but Statement 1 is
+    that company's MOST RECENT filing — reusing it for, say, a 2015 panel
+    row would leak a 2024/2025 balance-sheet snapshot into a historical
+    row's features, violating this module's own "no information from
+    outside what's available at prediction time" rule (a genuine forward-
+    looking leakage risk, distinct from the turnover-derivation leakage
+    checked above, but still leakage). Year-anchoring avoids it at the cost
+    of coverage: verified against labelled_features.csv, only ~33% of the
+    367 labelled companies have a non-null value for any of these 9 ratios
+    (~4% of panel ROWS, since each qualifying company only contributes the
+    one row matching its Statement 1 year) — well above the "not just 1-2%"
+    bar the task set, but a real, stated cost of doing this correctly."""
+    df = src1.copy()
+    out = pd.DataFrame({"_url_norm": df[URL_COL].apply(_normalize_url)})
+    out["year"] = df["Financial Statement 1 - Date of accounts"].dt.year
+    for src_col, out_col in SOURCE1_SAFE_RATIO_COLUMNS.items():
+        out[out_col] = df[f"Financial Statement 1 - {src_col}"]
+    return out.dropna(subset=["year"])
+
+
+def merge_source1_ratio_features(df: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.DataFrame:
+    """Shared by add_features (labelled panel) and predict.py's
+    add_prediction_features (inference population) — same Source 1 join as
+    merge_source3_features, but merged on (company_id, year) instead of
+    company_id alone, since these ratios are one-snapshot-in-time facts, not
+    a company-constant or a cumulative-to-date signal."""
+    src1 = load_source1()
+    src1_features = build_source1_ratio_features(src1)
+    url_lookup = _url_to_company_id(segmented_df)
+    src1_features = src1_features.merge(url_lookup, on="_url_norm", how="inner").drop(columns="_url_norm")
+    # A company can (rarely) have more than one Source 1 row mapping to the
+    # same (company_id, year) after the URL join; keep the first to preserve
+    # add_features' one-row-per-(company, year) panel shape rather than
+    # fanning rows out.
+    src1_features = src1_features.drop_duplicates(subset=[COMPANY_ID_COL, "year"])
+    return df.merge(src1_features, on=[COMPANY_ID_COL, "year"], how="left")
 
 
 def merge_source3_features(df: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.DataFrame:
@@ -193,7 +332,7 @@ def merge_source3_features(df: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.D
     `company_id`."""
     src3 = load_source3()
     src3_features = build_source3_features(src3)
-    url_lookup = _source3_url_to_company_id(segmented_df)
+    url_lookup = _url_to_company_id(segmented_df)
     src3_features = src3_features.merge(url_lookup, on="_url_norm", how="inner").drop(columns="_url_norm")
     df = df.merge(src3_features, on=COMPANY_ID_COL, how="left")
 
@@ -241,6 +380,7 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
     df.loc[is_age_anomaly, "company_age_years"] = np.nan
 
     df = merge_source3_features(df, segmented_df)
+    df = merge_source1_ratio_features(df, segmented_df)
 
     return df, age_log
 

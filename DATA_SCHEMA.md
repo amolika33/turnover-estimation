@@ -209,3 +209,71 @@ the same companies (some will be missing from one side or the other).
   `accelerator_count`). Still relevant for adjacent companies, where this +
   financials may be the *only* data available (Source 3-style enrichment
   hasn't been confirmed to exist for the adjacent-company universe yet).
+- ~~Source 1's ~20 Financial Statement 1 financial ratios (gearing %,
+  current ratio, ROCE, ROTA, debtor/creditor days, etc.) — not yet
+  incorporated.~~ **Done** — see "Source 1 financial ratios" below.
+
+## Source 1 financial ratios (Financial Statement 1, added this pass)
+
+Source 1 has ~20 financial ratios per Financial Statement block. Only
+Statement 1 is used (confirmed most recent filing, see "Statement-to-year
+anchoring" above). Two checks were performed against real data before
+including any of them, not assumed:
+
+**1. Coverage** (out of 1,372 Source 1 rows): two tiers —
+- 90.8-94.8% populated: Current ratio, Liquidity acid test, Gearing (%),
+  Equity (%), Current debt ratio, Total debt ratio.
+- 30.8-30.9% populated: Return on capital employed (%), Return on total
+  assets employed (%), Return on net assets employed (%). Still well above
+  the "not just 1-2%" bar, but a visibly sparser tier — the same 9
+  columns the excluded (turnover-derived) Pretax profit margin/Debtor
+  days/Creditor days/Exports turnover ratio/Stock turnover ratio also come
+  from, i.e. companies that filed non-abbreviated (full P&L) accounts.
+
+**2. Turnover-derivation leakage check** — reconstructed each candidate
+ratio from its own component columns (e.g. Pretax profit / Turnover) and
+compared to the actual column value:
+- **6 excluded** (exact or near-exact reconstruction from a formula that
+  divides by `Financial Statement 1 - Turnover`, i.e. Total Turnover in
+  disguise — forbidden regardless of how indirect): Pretax profit margin
+  (%), Debtor days, Creditor days, Exports turnover ratio (%), Sales
+  networking capital (all exact), Stock turnover ratio (%) (excluded on
+  definitional grounds — standard accounting term always includes Sales/
+  Turnover, exact formula just wasn't pinned since this dataset lacks an
+  averaged-stock figure).
+- **9 kept**, confirmed balance-sheet-only (never reconstructs from
+  Turnover; raw/log correlation with Turnover also far weaker than the
+  confirmed-leaky ratios, consistent with — not the primary proof for —
+  the formula evidence): Current ratio, Liquidity acid test, Gearing (%),
+  Equity (%), Current debt ratio, Total debt ratio, Return on capital
+  employed (%), Return on total assets employed (%), Return on net assets
+  employed (%). See `feature_engineering.py`'s `SOURCE1_SAFE_RATIO_COLUMNS`
+  / `DROPPED_COLUMNS` for the full per-ratio reconstruction formulas.
+
+**3. Year-anchoring, not a company-constant** — unlike Source 3's grant/
+funding signals (attached to every panel row of a company), these 9 ratios
+are a single snapshot tied to Statement 1's own accounting date. Attaching
+them to every year of a company's panel (like a static fact) would leak a
+recent balance-sheet snapshot into historical rows — forbidden by this
+project's own "no information from outside what's available at prediction
+time" rule. `feature_engineering.py`'s `merge_source1_ratio_features` joins
+on (company_id, year) instead, leaving every other year null. Real cost of
+doing this correctly, checked against the actual merged panel: only ~33%
+of the 367 labelled companies (~4% of panel rows) end up with a non-null
+value for any of these 9 ratios — SimpleImputer(median) in
+`model_bakeoff.py`'s preprocessor handles the rest, same as any other
+partially-populated numeric feature.
+
+**Side effect observed, not fixed here**: 2 of the 9 ratios (Current debt
+ratio, Total debt ratio) have extreme outliers (min -659, max 320,272 —
+near-zero-equity denominators) that reproduce the project's known
+BT/BAE-Systems-style linear-model instability (see `model_bakeoff.py`'s
+module docstring) when the new features were smoke-tested: Linear
+Regression/Ridge/Elastic Net coefficients occasionally blow up
+(R2 as extreme as -1e127 in one quick test run). Left as-is rather than
+clipped/winsorised — `model_selection.py`'s existing robustness filter
+(R2 < -2 or a 3x fold MAE blow-up excludes a model from winning) already
+exists specifically to catch and exclude this failure mode, and Lasso/
+tree ensembles/CatBoost are unaffected (L1/tree splits are robust to
+unbounded single-feature outliers) — consistent with, not a regression
+from, the project's existing design.
