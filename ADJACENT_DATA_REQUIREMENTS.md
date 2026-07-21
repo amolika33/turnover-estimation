@@ -149,6 +149,28 @@ mortgages, and tracking-reason columns. Whoever sources the adjacent data
 should not feel obliged to replicate any of these — see
 `feature_source_mapping.csv` for the complete row-by-row list and reasons.
 
+## Update: the files arrived, initial prep done (`src/adjacent_data_prep.py`)
+
+The 3 planned files arrived (`SatApps ACE/Beyond Earth/Resilient Earth
+training data.xlsx`, 2,505/3,659/5,963 rows) and were validated against
+this document's checklist — schema, mission-tagging, and field coverage
+all confirmed as expected (single Source1/3-style export per mission,
+100%-populated CH ID and Beauhurst URL). `src/adjacent_data_prep.py` now
+builds `company_id`, parses `sic_code_1`, derives `company_size`, flags
+`multi_mission_overlap`, and reconstructs an un-annualized turnover-by-
+year panel from the Financial Statement blocks — see PROJECT_NOTES.md's
+"Adjacent-company groundwork" section for the full write-up of each
+decision. Two things confirmed missing that this checklist didn't
+originally call out: no incorporation/registration-date field of any kind
+(so `company_age_years` is null for every adjacent company — a Companies
+House API lookup could recover it, flagged as a separate future decision,
+not built), and no `Total Export Revenue` substitute (also left null).
+
+**This is still groundwork, not the merge**: `adjacent_static_features.csv`
+and `adjacent_turnover_panel.csv` are standalone outputs for review: no
+adjacent row has entered `sample_construction.py`/`feature_engineering.py`/
+`model_bakeoff.py` yet.
+
 ## Not covered here (deferred to the actual merge implementation)
 
 - Exact column-name mapping from Source 1's raw fields to the feature set
@@ -160,3 +182,11 @@ should not feel obliged to replicate any of these — see
   company appearing in an adjacent file (unlikely but not impossible given
   ~23k rows) — not addressed; flag if it turns out to matter once real
   data is in hand.
+- Whether/how to apply the filing-period annualization fix to the
+  reconstructed adjacent turnover panel (4.9% non-52-week rows found,
+  same order of magnitude as the original space-company data) — left
+  un-annualized for now, matching the estimation pipeline's own precedent,
+  but this should be revisited once the panel is actually merged in.
+- A Companies House API lookup to recover real incorporation dates for
+  `company_age_years` (12,127 companies) — flagged as worth pursuing, not
+  scoped or built.

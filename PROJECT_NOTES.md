@@ -1142,3 +1142,74 @@ Resilient Earth's own labelled data, a real architectural change PROJECT_NOTES.m
 here. Outputs: `model_bakeoff_pooled_summary.csv`,
 `model_bakeoff_pooled_per_mission_summary.csv`,
 `pooled_vs_mission_specific_comparison.csv`.
+
+## Adjacent-company groundwork (`src/adjacent_data_prep.py`) — initial data prep, not yet integrated
+
+The 3 planned adjacent-company files arrived (`SatApps ACE/Beyond
+Earth/Resilient Earth training data.xlsx`, 2,505/3,659/5,963 rows —
+smaller than the originally-planned ~23k, but real data, not a stub).
+Validated against `ADJACENT_DATA_REQUIREMENTS.md` first (see that doc):
+confirmed single-export Source1/3-style schema, 100%-populated CH ID and
+Beauhurst URL, and good coverage of the required financial/grants/
+accelerator fields. This section covers the 6 follow-up decisions made
+once real files were in hand, implemented in `src/adjacent_data_prep.py`.
+**This module produces two standalone CSVs
+(`adjacent_static_features.csv`, `adjacent_turnover_panel.csv`) for review
+— it does NOT wire into `sample_construction.py`/`feature_engineering.py`/
+`model_bakeoff.py` yet.** That integration (setting `population_type` to
+`"adjacent"`, tuning `ADJACENT_SAMPLE_WEIGHT`, restricting outer CV folds
+to space companies per the build-order note above) remains a separate,
+later decision.
+
+1. **`company_age_years`**: searched all 437 raw columns for anything
+   incorporation/registration-date-equivalent (not just an exact
+   `Founded` match) — genuinely absent. Left null for every adjacent
+   company; the pipeline's existing median imputation handles it like any
+   other missing numeric feature. **Flagged, not built**: a Companies
+   House API lookup (one call per company, 12,127 companies total) could
+   recover real incorporation dates — worth pursuing as its own scoped
+   decision (rate limits, API key, caching) if adjacent-company age turns
+   out to matter once these rows are actually used in training.
+2. **`multi_mission_overlap`**: 322/2,505 ACE, 263/3,659 Beyond Earth, and
+   323/5,963 Resilient Earth companies also appear in at least one other
+   mission's file (26 companies appear in all 3 — verified via
+   `company_id`, matching an independent URL-based cross-check).
+   Companies are kept in **every** mission file they appear in (not
+   deduplicated down to one), with a `multi_mission_overlap` column
+   listing the other mission(s) — e.g. Chemring and Ford Motor Company
+   appear in all 3 mission files and are flagged as such in each. This
+   makes the overlap visible to any downstream analysis rather than
+   letting each appearance look like an independent company.
+3. **`sic_code_1`**: the adjacent files carry `SIC Codes (2007) - Code` as
+   a comma-separated multi-code string (e.g. `"58110, 58142, 58190,
+   58290"`), unlike Source 2's single `sic_code_1` value. Parsed as the
+   first code only, matching the "primary SIC code" convention
+   `sic_code_1` represents elsewhere (`parse_sic_code_1`). 97-98% parse
+   successfully across all 3 files.
+4. **`company_size`**: derived from `Financial Statement 1 - Number of
+   employees` via the standard Micro (<10) / Small (10-49) / Medium
+   (50-249) / Large (250+) UK/EU SME employee-count thresholds
+   (`build_company_size`). Checked against real data before using it, not
+   assumed: this rule reproduces Beauhurst's own `Size {year}` bucket for
+   space companies **96.1%** of the time (2,876/2,994 `labelled_features.csv`
+   rows with both fields populated) — the small remainder is explained by
+   `company_size` and `total_employees` coming from different snapshot
+   years for the same company (a known temporal-mismatch pattern already
+   documented elsewhere in this file), not a different underlying rule.
+5. **`total_export_revenue`**: no substitute field exists anywhere in the
+   437 raw columns — left null, same imputation as any other missing
+   feature.
+6. **Turnover-by-year panel**: reconstructed from the 10 Financial
+   Statement blocks (`Date of accounts` -> year, `Turnover` -> value),
+   the same statement-to-year anchoring convention
+   `build_source1_annualization_factors` already uses for space companies
+   (`build_turnover_panel`). Returned **un-annualized** — raw turnover
+   alongside its own `weeks` value — matching this project's existing
+   precedent of leaving the estimation pipeline's own target
+   un-annualized (see "Filing-period annualization" above for why that
+   was a deliberate choice). Worth noting: **4.9% of the reconstructed
+   panel's (company, year) rows have a non-52-week accounting period**
+   (5,278/106,805) — essentially the same order of magnitude as the 4.0%
+   found in the original space-company data, so the same annualization
+   question will need answering here too, if/when this panel is actually
+   merged into training or forecasting.

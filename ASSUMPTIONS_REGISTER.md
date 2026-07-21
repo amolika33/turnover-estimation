@@ -276,6 +276,45 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
     paragraph and the ranking clarification after the `reliability`
     bullet).
 
+## Adjacent-company groundwork (this session — `src/adjacent_data_prep.py`)
+
+46. **`company_age_years` for adjacent companies**: no incorporation/
+    registration-date-equivalent field exists anywhere in the 437 raw
+    columns (checked exhaustively, not assumed) — left null, standard
+    imputation applies. A Companies House API lookup could recover this
+    for real but is flagged as a separate, larger decision, not built. ✅
+    `PROJECT_NOTES.md` "Adjacent-company groundwork" #1;
+    `ADJACENT_DATA_REQUIREMENTS.md` "Not covered here".
+47. **`multi_mission_overlap` flag**: companies appearing in more than one
+    mission's adjacent file are kept in every mission they appear in (not
+    deduplicated), with a column naming the other mission(s) — 322/263/323
+    companies flagged in ACE/Beyond Earth/Resilient Earth respectively (26
+    appear in all 3). ✅ `PROJECT_NOTES.md` "Adjacent-company groundwork" #2.
+48. **`sic_code_1` parsing for adjacent companies**: the raw
+    `SIC Codes (2007) - Code` field is a comma-separated multi-code
+    string, unlike Source 2's single value — first code taken as the
+    primary SIC code. ✅ `PROJECT_NOTES.md` "Adjacent-company groundwork" #3.
+49. **`company_size` bucketing for adjacent companies**: derived from
+    `Financial Statement 1 - Number of employees` via the standard
+    Micro(<10)/Small(10-49)/Medium(50-249)/Large(250+) UK/EU SME
+    employee-count thresholds — verified this reproduces Beauhurst's own
+    `Size {year}` bucket for space companies 96.1% of the time before
+    relying on it for adjacent companies (which have no `Size {year}` at
+    all). ✅ `PROJECT_NOTES.md` "Adjacent-company groundwork" #4.
+50. **`total_export_revenue` for adjacent companies**: no substitute field
+    exists in the raw export — left null, standard imputation applies. ✅
+    `PROJECT_NOTES.md` "Adjacent-company groundwork" #5.
+51. **Adjacent turnover-by-year panel, un-annualized**: reconstructed from
+    the 10 Financial Statement blocks (same statement-to-year anchoring as
+    `build_source1_annualization_factors`), returned un-annualized to
+    match the estimation pipeline's existing precedent of not annualizing
+    its own target. 4.9% of reconstructed (company, year) rows have a
+    non-52-week accounting period — same order of magnitude as the
+    original space-company finding — flagged as needing revisiting once
+    this panel is actually merged into training/forecasting, not resolved
+    here. ✅ `PROJECT_NOTES.md` "Adjacent-company groundwork" #6;
+    `ADJACENT_DATA_REQUIREMENTS.md` "Not covered here".
+
 ## Summary
 
 - **41 of 45** were already documented somewhere before this pass (33
@@ -293,3 +332,6 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
 - **#44 and #45** (this session's own resolved investigations) were
   verified to already reflect their RESOLVED state in `PROJECT_NOTES.md`,
   not the original open question.
+- **#46-51** (a later session): 6 new decisions made once the real
+  adjacent-company files arrived, all documented in `PROJECT_NOTES.md`'s
+  "Adjacent-company groundwork" section at the time they were made.
