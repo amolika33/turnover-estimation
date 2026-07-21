@@ -234,6 +234,15 @@ for the 197 with zero observed turnover history — the other 108 cross-cutting
 companies have real observed turnover and are untouched, handled entirely by
 `assemble.py`'s existing observed-turnover branch.
 
+**Why this exists at all**: `data/mission_mapping.csv` only maps Value
+Streams that belong to one of the three real missions. `Consultancy /
+Other` and `Explore New Markets` are their own separate Value Streams —
+they don't map to ACE, Beyond Earth, or Resilient Earth by design, not by
+omission. So a cross-cutting company has no unambiguous mission to apply
+any mission-specific model to in the first place; the SIC/keyword
+best-guess process below exists solely to give these companies a
+plausible mission to borrow a model from, since none is given.
+
 - **At prediction time only** (never for training): each cross-cutting
   company with no observed turnover is assigned a best-guess mission (ACE /
   Beyond Earth / Resilient Earth) via similarity to the three real missions'
@@ -263,6 +272,13 @@ companies have real observed turnover and are untouched, handled entirely by
   mission itself is inferred here, not given, regardless of what the
   underlying OOD check found. `reliability_reason` keeps both the assignment
   method and the OOD reason (if any), not just one or the other.
+  **`"approximate"` should be read as ranking BELOW `"standard"` and even
+  below `"low"`**, not just as a same-tier alternative label: a real
+  mission-matched company's `"low"` reflects one source of uncertainty (an
+  out-of-distribution covariate check), while a cross-cutting company's
+  `"approximate"` stacks that same model-quality uncertainty on top of a
+  second, independent one — whether the best-guess mission assignment
+  itself is even correct.
 - Cross-cutting companies still never enter training data for any mission
   model, no exceptions — this only affects what happens at inference time.
 - Writes `predictions_cross_cutting.csv` (same schema as `predictions_all.csv`)
@@ -424,6 +440,28 @@ list is the third leg, not the only place it's written down.
 Separate pipeline stage, built on the completed dataset above — see
 `FORECASTING_METHODOLOGY.md` for the full verbatim spec. Kept in its own
 `forecast_src/` package, never mixed into `src/`.
+
+**What "2030" actually means, stated explicitly (known simplification, not
+a silent gap)**: `accounting_year` (and `FORECAST_END_YEAR = 2030`) is a
+bare integer throughout this pipeline — `forecast_recursive.py` advances it
+`+1` per recursive step with no month/day attached anywhere, and the
+original methodology spec (`FORECASTING_METHODOLOGY.md`) never defines one
+either. Source 2's own column is literally `Total Turnover (CH year)` —
+whatever calendar-year label Companies House/Beauhurst assigned to that
+filing. So "a company reaches 2030" currently means **that company's own
+fiscal-year-labelled-2030 turnover figure** — not a value pinned to any
+specific calendar date, and specifically NOT verified to align with the UK
+government fiscal year start (April 2030) or any other fixed date. Since
+company year-ends vary (a March year-end company's "2030" figure covers
+Apr 2029-Mar 2030 and ends before April 2030; a December year-end
+company's covers all of calendar 2030 and straddles it), two companies
+both labelled "2030" are not necessarily describing the same real-world
+period. Pinning precisely to April 2030 would require carrying each
+company's actual fiscal year-end month (present in Source 1's `Date of
+accounts`, not currently propagated into the year-indexed panel or the
+forecast pipeline at all) and a real modelling decision about interpolating
+within a fiscal year — a separate, larger design question, not implemented
+here.
 
 1. ✅ `forecast_data_prep.py` — validates the completed baseline + historical
    company-year panel (methodology sec 2-3); also owns two exclusion
