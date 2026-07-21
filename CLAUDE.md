@@ -935,3 +935,64 @@ showing for ACE specifically: the problem isn't categorical cardinality at
 all, so CatBoost's actual advantage is irrelevant there, and tree-based
 splitting generalises even worse than regularised linear regression with
 this few training companies and this much per-company leverage.
+
+### 5. Pooled model bake-off — a hedge, not a replacement (`src/model_bakeoff_pooled.py`)
+
+Trained on all 367 training-eligible space companies across all 3 real
+missions together (3,133 panel rows: 665 ACE + 1,781 Beyond Earth + 687
+Resilient Earth — the real, verified count, not the ~919 estimate floated
+before this was built), `mission` added as a categorical feature. Winner
+selected via the identical robustness-filter -> composite-rank ->
+simplicity-tie-break procedure as the mission-specific pipeline
+(`model_selection.select_model`, reused directly), then that one winner's
+held-out predictions sliced per mission for a same-fold, no-refit,
+apples-to-apples comparison against each mission's own selected model:
+
+| Mission | Pooled winner (R2_mean) | Mission-specific model (R2_mean) | Pooled beats mission-specific? |
+|---|---|---|---|
+| ACE | Random Forest, **0.36** | Lasso, 0.14 | **Yes** |
+| Beyond Earth | Random Forest, 0.62 | Lasso, 0.63 | No (essentially tied) |
+| Resilient Earth | Random Forest, 0.64 | CatBoost, 0.65 | No (essentially tied) |
+
+**The pooled model beats ACE's mission-specific model, by a real margin
+(0.36 vs 0.14) — not just noise.** This is exactly consistent with the ACE
+diagnostic above: ACE's core weakness was identified as too few companies
+(80) per CV fold to dilute the leverage of a handful of structurally
+atypical companies (BT, Babcock, Costain, Intelsat, Avanti). Pooling gives
+the model ~4.7x more companies (367) to train on, and Random Forest's
+bagging/ensemble structure is specifically robust to any single
+high-leverage training point in a way a single Lasso fit on just ~64 ACE
+training companies per fold isn't — directly addressing the diagnosed
+mechanism, not a generic "more data helps" effect (which is also why
+pooling does NOT help Beyond Earth/Resilient Earth: they already had
+enough companies per fold that a few extra didn't move the needle, and
+pooling in fact costs Beyond Earth's Lasso its edge, since the pooled
+data's added cross-mission heterogeneity works against a single global
+linear fit — a real, if very minor, downside of pooling for the
+already-well-served missions).
+
+**Notable side effect**: pooling destabilises the linear models far more
+than any single mission's bake-off ever did — Lasso/Elastic Net/Ridge/
+Linear Regression all produced R2 as extreme as -1e96 in the pooled
+setting (vs. merely "occasionally exploding to 1e83" in isolated
+mission bake-offs). The combination of `mission`'s new one-hot columns,
+the already-marginal Source 1 debt-ratio outliers (documented above), and
+the pooled data's much larger scale range (spanning BT/BAE Systems down to
+Frontier Agriculture-scale companies all at once) evidently compounds the
+project's known linear-model instability. Only tree-based/ensemble models
+(Random Forest, Gradient Boosting, Extra Trees, CatBoost) and SVR/k-NN
+stayed sane pooled — consistent with, not contradicting, this file's
+existing "Lasso survives via L1 zeroing, other linear models don't"
+finding, just at a larger scale.
+
+**Status**: this is a hedge/fallback finding for ACE specifically, kept
+alongside — not instead of — the mission-specific models. ACE's deployed
+model in `predict.py`/`assemble.py` remains whatever `selected_models.csv`
+says (currently Lasso, R2_mean=0.14, `usable=True`); switching ACE to the
+pooled Random Forest would be a deliberate, separate decision (it would
+also mean ACE's inference-time predictions depend on Beyond Earth/
+Resilient Earth's own labelled data, a real architectural change CLAUDE.md's
+"Three independent mission models" rule was written to avoid) — not made
+here. Outputs: `model_bakeoff_pooled_summary.csv`,
+`model_bakeoff_pooled_per_mission_summary.csv`,
+`pooled_vs_mission_specific_comparison.csv`.
