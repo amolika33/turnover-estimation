@@ -3,7 +3,7 @@
 This documents the format the incoming ~23k adjacent-company files need to
 be in for smooth integration into the existing pipeline. The merge itself
 isn't built yet (no data to test against) — this is what to ask for /
-check against when the files arrive. See CLAUDE.md "Current status / build
+check against when the files arrive. See PROJECT_NOTES.md "Current status / build
 order" step 3 and "Documented assumptions and thresholds" for the related
 pipeline-side prep.
 
@@ -20,7 +20,7 @@ year-indexed panel columns) were purpose-built for the ~1,225 space
 companies specifically and won't exist for a general adjacent-company
 export.
 
-Confirmed from Source 1 exploration this session: Statement 1 is reliably
+Confirmed from Source 1 exploration: Statement 1 is reliably
 the most recent filing (verified across all 1,372 space companies, zero
 violations) — safe to rely on for adjacent data too, but worth spot-checking
 once real files arrive rather than assuming it holds universally.
@@ -35,8 +35,8 @@ valid and the pipeline handles either automatically — this is a quality
 preference, not a hard blocker.
 
 Caveat worth flagging now: **Source 1's actual raw schema, as exported
-today, has no Companies House number column at all** (verified this
-session — only `Beauhurst URL`). If the adjacent exports are a literal
+today, has no Companies House number column at all** (verified directly
+against the export — only `Beauhurst URL`). If the adjacent exports are a literal
 match to Source 1's schema, they may have the same gap. If whoever
 generates the adjacent export can add a CH number column that Source 1
 itself doesn't have, that's a real improvement (fewer fallback-hash ids,
@@ -49,7 +49,7 @@ Each adjacent file should be **pre-tagged or filename-tagged by mission**
 (ACE / Beyond Earth / Resilient Earth) — three separate exports, one per
 mission, matching how the Beauhurst collections were built. Adjacent
 companies do **not** need the buzzword-based mission-inference logic
-planned for cross-cutting companies (CLAUDE.md "Planned: cross-cutting
+planned for cross-cutting companies (PROJECT_NOTES.md "Planned: cross-cutting
 predictions") — that logic exists specifically because cross-cutting
 companies and (potentially) future unsegmented data lack a given mission.
 Adjacent companies arrive already knowing which mission they belong to;

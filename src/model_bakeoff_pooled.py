@@ -3,13 +3,13 @@ across all 3 real missions TOGETHER, with `mission` added as a categorical
 FEATURE rather than the dataset partition. Independent of, and does not
 replace, the mission-specific bake-off in src/model_bakeoff.py.
 
-WHY THIS EXISTS (a hedge/comparison, not a replacement): CLAUDE.md's "Three
+WHY THIS EXISTS (a hedge/comparison, not a replacement): PROJECT_NOTES.md's "Three
 independent mission models" rule is the project's primary, deliberately
 chosen approach — pooling missions into one model is explicitly listed as
 something NOT to do for the real pipeline. This module exists only to
 answer one specific diagnostic question: given ACE's persistent weakness
 (only ~80 labelled companies, R2_mean=0.15 even after linkedin_industry
-removal — see CLAUDE.md), does training on the ~3-4x larger pooled dataset
+removal — see PROJECT_NOTES.md), does training on the ~3-4x larger pooled dataset
 (borrowing Beyond Earth/Resilient Earth's signal, with `mission` itself as a
 feature so the model can still learn a mission-level adjustment) do better
 than ACE's own mission-specific model? Both results are kept and reported

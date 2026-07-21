@@ -1,6 +1,7 @@
 # Turnover Estimation Framework — Project Context
 
-This file gives Claude Code persistent context on this project. Read it before making changes.
+This file provides persistent context on this project's methodology,
+decisions, and status. Read it before making changes.
 
 ## Objective
 
@@ -344,7 +345,7 @@ list is the third leg, not the only place it's written down.
   though it sits alongside a company predicted for `year=2025`. Companies
   with **zero** covariate data in any year (no real snapshot to anchor to
   at all) fall back to `year=max(YEARS)=2025` — never 2026, since 2026's
-  columns are ~100% empty in Source 2 (confirmed this session) — with
+  columns are ~100% empty in Source 2 (confirmed against the current export) — with
   every numeric feature left null for the pipeline's imputer to fill in.
   Both facts are in the output data, not just here: every predicted row
   carries `prediction_year` (the year used) and `is_fallback_year` (True =
@@ -722,16 +723,16 @@ Separate pipeline stage, built on the completed dataset above — see
      point is the opposite: they were considered and explicitly found not
      to meet the credibility bar. **Current run: 0/77 companies in the
      £50M intersection fail this gate** — not because the gate is
-     vacuous, but because growth-rate decay (already fixed, previous
-     session step) already pulled the thin-base outliers' 2030 values
+     vacuous, but because growth-rate decay (already fixed, an earlier
+     step) already pulled the thin-base outliers' 2030 values
      below £50M before this gate ever runs (SaxaVord £42.4M, Infleqtion
      £376K, Map of Agriculture £935K — none reach the £50M bar at all,
      gazelle-qualifying or not). The gate is a safeguard against a future
      data refresh or parameter change reintroducing that failure mode, not
      evidence that it's unnecessary now.
 10. ✅ `forecast_prediction_intervals.py` — presentation-layer additions
-    beyond the original build order, added at the user's request once the
-    9-step pipeline was complete.
+    beyond the original build order, added as a follow-on requirement once
+    the 9-step pipeline was complete.
     - **`export_excel_workbook.py`**: consolidates the completed baseline
       (`assemble.py`) + all 6 `forecast_reporting.py` outputs into one
       `.xlsx` (`data/output/turnover_forecast_workbook.xlsx`), presentable
@@ -991,7 +992,7 @@ model in `predict.py`/`assemble.py` remains whatever `selected_models.csv`
 says (currently Lasso, R2_mean=0.14, `usable=True`); switching ACE to the
 pooled Random Forest would be a deliberate, separate decision (it would
 also mean ACE's inference-time predictions depend on Beyond Earth/
-Resilient Earth's own labelled data, a real architectural change CLAUDE.md's
+Resilient Earth's own labelled data, a real architectural change PROJECT_NOTES.md's
 "Three independent mission models" rule was written to avoid) — not made
 here. Outputs: `model_bakeoff_pooled_summary.csv`,
 `model_bakeoff_pooled_per_mission_summary.csv`,

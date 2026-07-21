@@ -16,7 +16,7 @@ stages read files earlier ones wrote, so continuing past a failure would
 just fail again on a missing/stale file with a more confusing error.
 
 Not included, deliberately: `src/model_bakeoff_pooled.py` (a hedge/
-comparison finding, not part of the deployed pipeline — see CLAUDE.md's
+comparison finding, not part of the deployed pipeline — see PROJECT_NOTES.md's
 "Model improvement investigation" §5) and `dashboard.py` (an interactive
 Streamlit app, not a batch stage — run it separately once the pipeline
 below has produced the CSVs it reads; see README.md).

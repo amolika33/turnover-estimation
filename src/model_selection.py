@@ -83,7 +83,7 @@ R2_COMPARABLE_TOLERANCE = 0.05
 BROKEN_FOLD_R2 = -2.0
 BLOWUP_FOLD_MAE_MULTIPLE = 3.0
 
-# ASSUMPTION (documented here + CLAUDE.md "Model usability threshold" +
+# ASSUMPTION (documented here + PROJECT_NOTES.md "Model usability threshold" +
 # the usable/exclusion_reason columns in selected_models.csv): a selected
 # model is only usable for prediction if it beats predicting the mission's
 # own mean turnover, i.e. R2_mean > 0. This is what took ACE out of

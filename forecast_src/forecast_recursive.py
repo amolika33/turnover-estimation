@@ -2,7 +2,7 @@
 own baseline year out to 2030 (build order step 7).
 
 ROUTING RULE (stated assumption, not implicit in the code — see
-CLAUDE.md's "2030 Forecasting Pipeline" section for the full investigation
+PROJECT_NOTES.md's "2030 Forecasting Pipeline" section for the full investigation
 that produced it): forecast_selection.py found Persistence (no-growth)
 winning horizon=1 in all 3 missions, but a follow-up check
 (forecast_evidence_group_diagnostic.py) split that result by actual growth

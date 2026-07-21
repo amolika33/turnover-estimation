@@ -1,7 +1,7 @@
 """Residual-based confidence intervals for the recursive 2030 forecast,
 stratified by evidence group (A/B/C/D).
 
-METHOD (documented here + CLAUDE.md, per project convention):
+METHOD (documented here + PROJECT_NOTES.md, per project convention):
 
 1. Per-step residual spread. The deployed one-year-ahead mechanism is
    Persistence for the "stable" majority (forecast_selection.py's actual

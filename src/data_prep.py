@@ -138,7 +138,7 @@ def make_company_id(df: pd.DataFrame) -> pd.Series:
     """Stable, guaranteed-non-null per-company identifier.
 
     ASSUMPTION (documented per project convention: code comment here +
-    CLAUDE.md + the company_id column itself in every output CSV):
+    PROJECT_NOTES.md + the company_id column itself in every output CSV):
     CH-number-prefixed ("ch_...") where a CH number exists, else a
     name+URL-hash fallback ("fallback_..."). Every downstream GroupKFold
     call and the assemble.py merge key use this instead of raw CH number.

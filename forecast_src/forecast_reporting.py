@@ -29,7 +29,7 @@ immediately preceding calendar year — a gap year breaks the run, same
 "no non-consecutive transitions" rule forecast_sample_construction.py's
 sec 5 established) meets the tier's threshold. GAZELLE_CONSECUTIVE_YEARS=3
 matches the OECD high-growth-enterprise definition (already the project's
-stated rationale in CLAUDE.md) — "3 consecutive years" here means 3
+stated rationale in PROJECT_NOTES.md) — "3 consecutive years" here means 3
 qualifying YEAR-OVER-YEAR TRANSITIONS in a row (the OECD's own convention:
 a 3-year growth period is 3 successive 1-year transitions, not 4 flat
 data points bracketing 3 gaps). Thresholds reuse forecast_recursive.py's
@@ -38,7 +38,7 @@ than inventing a second growth-rate formula for the same underlying idea.
 
 OPERATIONAL SCALING (new, independent of turnover): sec 7.7's
 employee_growth/asset_growth (log-difference, same construction as
-turnover's log_growth_1y after their earlier reformulation — see CLAUDE.md)
+turnover's log_growth_1y after their earlier reformulation — see PROJECT_NOTES.md)
 checked with the identical 10%/20%-for-3+-years logic, computed from REAL
 years only (these were never forecast forward — forecast_recursive.py
 holds employees/total_assets at their last known value for all future

@@ -29,7 +29,7 @@ origin (expanding-window) validation instead:
     KFold/GroupKFold.
 
 NUMERIC STABILITY — the BT/BAE Systems lesson from src/model_bakeoff.py,
-checked empirically before this module was built (see CLAUDE.md's "2030
+checked empirically before this module was built (see PROJECT_NOTES.md's "2030
 Forecasting Pipeline" section): raw turnover-scale features measure skew
 8-9.5 against real training data, the same shape that destabilised the
 estimation pipeline's linear models. TransformedTargetRegressor(log1p/

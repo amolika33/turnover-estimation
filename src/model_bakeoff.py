@@ -1,5 +1,5 @@
 """Cross-validated regression bake-off per mission. Follows the checklist in
-CLAUDE.md (methodology doc secs 1.7-1.8): all 9 candidate models, grouped CV
+PROJECT_NOTES.md (methodology doc secs 1.7-1.8): all 9 candidate models, grouped CV
 by company ID, per-fold preprocessing pipelines, scaling only for
 scale-sensitive models, hyperparameter search for every model, MAE/RMSE/R2
 for every model. Hyperparameter tuning happens inside the training fold only
@@ -14,7 +14,7 @@ partition of a ~80-200 company dataset, and results (especially the
 robustness fallback on ACE) were sensitive to it.
 
 Every model predicts log1p(total_turnover) via TransformedTargetRegressor,
-fit inside the pipeline per fold (CLAUDE.md's leakage rule already lists
+fit inside the pipeline per fold (PROJECT_NOTES.md's leakage rule already lists
 "target transforms" as something that belongs inside the training fold).
 Turnover is heavily right-skewed — BT (~£20-24bn), BAE Systems (~£26bn),
 Rolls Royce (~£19bn) and other primes sit 2-3 orders of magnitude above the
@@ -34,7 +34,7 @@ didn't. Fix: log1p those 5 numeric features too (LOG_NUMERIC_FEATURES),
 same justification and same per-fold fitting as the target transform.
 
 k-NN is scale-sensitive (distance-based) but isn't named in either bucket in
-the CLAUDE.md checklist (only Linear/Ridge/Lasso/ElasticNet/SVR are named
+the PROJECT_NOTES.md checklist (only Linear/Ridge/Lasso/ElasticNet/SVR are named
 scale-sensitive; only RF/Extra Trees/GB are named as using raw scale). Scaled
 it here as the standard-practice assumption — flagged for confirmation.
 
@@ -84,7 +84,7 @@ GROUP_COL = COMPANY_ID_COL
 WEIGHT_COL = "sample_weight"
 
 # NOT YET WIRED UP — no adjacent data exists to test against (see
-# ADJACENT_DATA_REQUIREMENTS.md and CLAUDE.md "Current status / build
+# ADJACENT_DATA_REQUIREMENTS.md and PROJECT_NOTES.md "Current status / build
 # order" step 3). Once adjacent rows are merged in, this should scale
 # their sample_weight down relative to space companies' inverse-frequency
 # weight (sample_construction.build_long_panel), so the model trusts
@@ -92,7 +92,7 @@ WEIGHT_COL = "sample_weight"
 # tuned empirically once adjacent data exists, by comparing candidate
 # weights (e.g. 0.2/0.5/1.0) against held-out SPACE-COMPANY-ONLY
 # validation performance, not pooled space+adjacent performance (see the
-# outer-CV note in CLAUDE.md's "Documented assumptions and thresholds").
+# outer-CV note in PROJECT_NOTES.md's "Documented assumptions and thresholds").
 ADJACENT_SAMPLE_WEIGHT = 0.5
 
 LOG_NUMERIC_FEATURES = [
@@ -204,7 +204,7 @@ MODELS = {
 }
 if CATBOOST_AVAILABLE:
     # Native categorical handling is the entire point of adding CatBoost here
-    # (CLAUDE.md: "specifically relevant to ACE's high-cardinality SIC code
+    # (PROJECT_NOTES.md: "specifically relevant to ACE's high-cardinality SIC code
     # instability"). cat_features tells CatBoost which columns to treat as
     # categories internally — this only pays off if those columns reach it
     # UN-one-hot-encoded, which is why build_catboost_preprocessor() (below)

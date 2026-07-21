@@ -645,11 +645,11 @@ and Resilient Earth before proceeding to the recursive forecasting stage.
 ## Implementation addendum (not part of the original spec above)
 
 Everything above this line is the verbatim spec as provided and must not be
-edited to reflect implementation decisions. `CLAUDE.md`'s "2030 Forecasting
+edited to reflect implementation decisions. `PROJECT_NOTES.md`'s "2030 Forecasting
 Pipeline" section is the build-order and decision log for this project's
 implementation of it, including one output beyond the spec text above:
 **`forecast_reporting.py`** (business-facing £10M-by-2030 / gazelle
 high-growth / intersection outputs, planned after `forecast_assemble.py`,
-not yet built). See `CLAUDE.md` for its full specification and the
+not yet built). See `PROJECT_NOTES.md` for its full specification and the
 decisions made building toward it (e.g. the 3-consecutive-year gazelle
 threshold).

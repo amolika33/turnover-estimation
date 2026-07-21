@@ -18,7 +18,7 @@ dataset (methodology sec 1.10). One row per company, in priority order:
    selected_models.csv, not hardcoded — see model_selection.py.
 4. Cross-cutting companies with no observed turnover — scored via
    src/cross_cutting_prediction.py's buzzword/SIC-code best-guess mission
-   assignment (see that module's docstring and CLAUDE.md "Planned:
+   assignment (see that module's docstring and PROJECT_NOTES.md "Planned:
    cross-cutting predictions"), reliability="approximate" (distinct from
    observed/standard/low — the mission itself is inferred, not given).
    Companies for which even that produced no valid prediction fall through
@@ -59,14 +59,14 @@ CROSS_CUTTING_REASON = (
     "predictions_cross_cutting.csv / prediction_invalid_reason for detail."
 )
 
-# ASSUMPTION (documented here + CLAUDE.md "Stale observed turnover" +
+# ASSUMPTION (documented here + PROJECT_NOTES.md "Stale observed turnover" +
 # turnover_age_years/turnover_is_stale columns below): "stale" means a
 # company's most recent observed turnover year is more than 3 years older
 # than the most recent year ANY company in the dataset filed. UK companies
 # must file accounts annually, so >3 consecutive years with nothing filed
 # suggests the company has genuinely stopped reporting turnover, not just
 # an administrative lag. This is a proposed threshold, not validated
-# against how many companies it actually flags — see CLAUDE.md for the
+# against how many companies it actually flags — see PROJECT_NOTES.md for the
 # still-open decision on what to do about stale values (currently: nothing,
 # they stay turnover_source="observed").
 STALE_THRESHOLD_YEARS = 3

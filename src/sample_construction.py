@@ -13,7 +13,7 @@ OUTPUT_DIR = REPO_ROOT / "data" / "processed"
 
 YEARS = list(range(2013, 2026))
 
-# ASSUMPTION (documented here + CLAUDE.md "Panel row weighting" +
+# ASSUMPTION (documented here + PROJECT_NOTES.md "Panel row weighting" +
 # sample_weight column itself): the methodology's unit of analysis is the
 # company, not the company-year. A company with 13 years of turnover history
 # and one with 1 year should count equally in training, not 13:1 — so
@@ -77,7 +77,7 @@ def build_long_panel(labelled_df: pd.DataFrame) -> pd.DataFrame:
     # why panel rows are weighted by inverse company row-count.
     panel["sample_weight"] = 1.0 / panel.groupby(COMPANY_ID_COL)[COMPANY_ID_COL].transform("count")
 
-    # Stub for the adjacent-company merge (CLAUDE.md "Current status / build
+    # Stub for the adjacent-company merge (PROJECT_NOTES.md "Current status / build
     # order" step 3): every row here is a space company today, but tagging
     # it now means adjacent rows can slot in as "adjacent" tomorrow without
     # a rename or a migration of already-written data.

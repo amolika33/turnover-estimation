@@ -1,5 +1,5 @@
 """Prediction-time-only best-guess mission scoring for cross-cutting
-companies with no observed turnover (CLAUDE.md "Planned: cross-cutting
+companies with no observed turnover (PROJECT_NOTES.md "Planned: cross-cutting
 predictions" — this is that build). Cross-cutting companies NEVER enter
 training data for any mission model, no exceptions — this module only
 affects what happens at inference time, exactly as scoped.

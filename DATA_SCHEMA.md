@@ -1,7 +1,7 @@
 # Data Schema Notes
 
 Two source spreadsheets feed the space-company dataset. This doc exists so
-Claude Code doesn't have to rediscover this structure from scratch each session.
+this structure doesn't need to be rediscovered from scratch on every review.
 
 ## Source 1: Beauhurst raw export ("financials" sheet)
 
@@ -163,7 +163,7 @@ the same companies (some will be missing from one side or the other).
   to the space-company path, not assumed to apply universally.
 - Expect and handle partial mismatches gracefully (company present in one
   source but not the other) rather than silently dropping rows — flag for
-  review per the eligibility criteria in CLAUDE.md.
+  review per the eligibility criteria in PROJECT_NOTES.md.
 
 1. **Statement-to-year anchoring** (Source 1) — **confirmed**: Financial
    Statement 1 is always the most recent filing. Verified across all 1,372

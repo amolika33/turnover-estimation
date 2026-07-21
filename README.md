@@ -8,7 +8,7 @@ Resilient Earth missions):
 2. **2030 forecasting** (`forecast_src/`) — projects each company's
    turnover trajectory forward from the completed baseline above.
 
-See `CLAUDE.md` for full methodology context, `PROJECT_SUMMARY.md` for a
+See `PROJECT_NOTES.md` for full methodology context, `PROJECT_SUMMARY.md` for a
 plain-language overview with no code, and `FORECASTING_METHODOLOGY.md` /
 `DATA_SCHEMA.md` for the underlying specs.
 
@@ -69,4 +69,4 @@ Forecasting build order (after the estimation pipeline has produced
 Not part of either build order — separate, standalone analyses, not
 required for the deployed pipeline:
 `python -m src.model_bakeoff_pooled` (a hedge/comparison model, see
-CLAUDE.md's "Model improvement investigation" §5).
+PROJECT_NOTES.md's "Model improvement investigation" §5).
