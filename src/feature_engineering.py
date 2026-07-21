@@ -439,8 +439,16 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
 
 
 def build_features(segmented_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    panel_all, _, _ = construct_samples(segmented_df)
-    return add_features(panel_all, segmented_df)
+    panel_all, _, _, turnover_quality_log = construct_samples(segmented_df)
+    df, age_log = add_features(panel_all, segmented_df)
+    # Combined into one quality log rather than a second file: both are
+    # "row flagged with a reason" logs from this same build, just from two
+    # different checks (sample_construction.check_turnover upstream, the
+    # negative-company-age check here) — differing columns concat fine
+    # (NaN where a column doesn't apply to that check's rows), same pattern
+    # forecast_data_prep.py's own quality_log already uses across checks.
+    combined_log = pd.concat([age_log, turnover_quality_log], ignore_index=True)
+    return df, combined_log
 
 
 def main() -> None:
@@ -448,13 +456,13 @@ def main() -> None:
     mapping = load_mapping()
     segmented, _ = segment_missions(prepped, mapping)
 
-    features, age_log = build_features(segmented)
+    features, quality_log = build_features(segmented)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "labelled_features.csv"
     features.to_csv(out_path, index=False)
     log_path = OUTPUT_DIR / "feature_engineering_quality_log.csv"
-    age_log.to_csv(log_path, index=False)
+    quality_log.to_csv(log_path, index=False)
 
     print("Feature columns (%d):" % len(FEATURE_COLUMNS))
     for c in FEATURE_COLUMNS:
@@ -464,14 +472,16 @@ def main() -> None:
     print(f"\nID/metadata columns (not features): {IDENTITY_COLS + [MISSION_COL, 'sample_weight', 'population_type']}")
     print("Target (never a feature): total_turnover")
 
-    if len(age_log):
-        print(
-            f"\nData quality flag: {len(age_log)} rows across "
-            f"{age_log[NAME_COL].nunique()} companies had a negative "
-            "company_age_years (turnover recorded in a year before Founded). "
-            "company_age_years nulled for those rows only (other features/"
-            f"turnover kept); logged to {log_path}."
-        )
+    if len(quality_log):
+        # Two independent checks feed this combined log (see build_features):
+        # negative company_age_years (this module) and negative/non-finite/
+        # non-numeric observed turnover (sample_construction.check_turnover,
+        # upstream of this module) — reason/exclusion_reason distinguishes them.
+        reason_col = "reason" if "reason" in quality_log.columns else "exclusion_reason"
+        print(f"\nData quality flags: {len(quality_log)} rows logged to {log_path}")
+        print(quality_log[reason_col].fillna(quality_log.get("exclusion_reason")).value_counts().to_string())
+    else:
+        print(f"\nNo data quality flags — none of the checked rows had an issue; logged to {log_path} (empty).")
 
     print(f"\nDropped columns ({len(DROPPED_COLUMNS)}):")
     for col, reason in DROPPED_COLUMNS.items():

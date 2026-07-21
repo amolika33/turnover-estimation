@@ -108,17 +108,29 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
     `PROJECT_NOTES.md` "Documented assumptions and thresholds"
     (`company_id`); `src/data_prep.py`'s `make_company_id` docstring.
 20. **Any negative/invalid turnover value is nulled and logged, never
-    silently corrected.** ⚠️
+    silently corrected.** ✅ (previously ⚠️ — code gap now closed)
     True for the FORECASTING pipeline (`forecast_data_prep.check_turnover`)
     and for PREDICTED turnover in the estimation pipeline
-    (`predict.validate_predictions`) — but **no equivalent check exists for
-    Source 2's raw, OBSERVED turnover value** in the estimation pipeline
-    before it becomes a training target. Verified: zero negative
-    `total_turnover` values in the current labelled panel, so not an
-    active risk today, but a genuine gap, not merely undocumented. Added
-    this pass to `PROJECT_NOTES.md` "Documented assumptions and
-    thresholds" as a stated gap (not fixed — a code change, out of scope
-    for a documentation pass).
+    (`predict.validate_predictions`) from the start. The estimation
+    pipeline's gap for Source 2's raw, OBSERVED turnover value — flagged
+    here in the previous pass, not merely undocumented but genuinely
+    missing from the code — has since been closed:
+    `sample_construction.check_turnover` (same null-and-log shape as
+    `forecast_data_prep.check_turnover`, not imported directly — src/ and
+    forecast_src/ stay independently auditable) now runs inside
+    `build_long_panel`, so every path that builds the labelled panel
+    (`sample_construction.main()`, `feature_engineering.build_features()`,
+    and transitively every `model_bakeoff.get_mission_features()` caller)
+    gets it automatically. Logged to `turnover_quality_log.csv`
+    standalone, or combined into `feature_engineering_quality_log.csv`
+    alongside the negative-company-age check when run via
+    `feature_engineering.py`. Verified a no-op against the current
+    labelled panel: 0 rows flagged, identical row counts before/after
+    (665/1781/687 for ACE/Beyond Earth/Resilient Earth, unchanged) — this
+    is now an ACTIVE check, not a documented absence.
+    `PROJECT_NOTES.md` "Documented assumptions and thresholds"
+    ("Observed-turnover validation"); `src/sample_construction.py`'s
+    `check_turnover` docstring.
 21. **Model-selection tie-break**: prefer the simpler model only when
     composite rank is within 1.0 AND R²_mean is within 0.05 of the
     top-ranked model. ✅
@@ -272,11 +284,12 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
 - **2 real documentation gaps found and closed this pass**: #8 (Volante
   Global's exclusion wasn't cross-referenced where a reader would look for
   it) and #12 (`min_frequency=5`'s specific value was never justified).
-- **1 genuine CODE gap, documented honestly rather than papered over**:
-  #20 — the estimation pipeline has no negative-turnover check for
-  observed (as opposed to predicted) values. Not an active risk (zero
-  negative values in current data), but a real absence, not just an
-  undocumented presence.
+- **1 genuine CODE gap, found, documented honestly, then closed**: #20 —
+  the estimation pipeline had no negative-turnover check for observed (as
+  opposed to predicted) values. Not an active risk (zero negative values
+  in current data), but a real absence, not just an undocumented
+  presence — `sample_construction.check_turnover` now closes it, verified
+  as a no-op against current data.
 - **#44 and #45** (this session's own resolved investigations) were
   verified to already reflect their RESOLVED state in `PROJECT_NOTES.md`,
   not the original open question.

@@ -189,7 +189,7 @@ def load_selected_models() -> pd.DataFrame:
 
 
 def predict_mission(mission: str, segmented: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    _, inference_all, _ = construct_samples(segmented)
+    _, inference_all, _, _ = construct_samples(segmented)
     inference_df = inference_all[inference_all[MISSION_COL] == mission].copy()
 
     snapshot = build_covariate_snapshot(inference_df)

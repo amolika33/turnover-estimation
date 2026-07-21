@@ -237,7 +237,14 @@ def build_historical_panel_source() -> tuple[pd.DataFrame, pd.DataFrame]:
     for group in groups:
         group_df = segmented[segmented[MISSION_COL] == group]
         labelled, _inference = split_labelled_inference(group_df)
-        panels.append(build_long_panel(labelled))
+        # build_long_panel's own turnover check (sample_construction.
+        # check_turnover) already nulls-and-drops any bad row before this
+        # module ever sees it — its log is discarded here (not silently
+        # skipped: this module's own validate_historical_panel -> check_turnover
+        # runs the identical check again downstream and would catch anything
+        # that somehow slipped through, so nothing goes unlogged overall).
+        panel, _turnover_quality_log = build_long_panel(labelled)
+        panels.append(panel)
     full_panel = pd.concat(panels, ignore_index=True)
 
     static = segmented[[COMPANY_ID_COL] + list(STATIC_COLS)].rename(columns=STATIC_COLS)

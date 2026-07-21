@@ -397,19 +397,21 @@ list is the third leg, not the only place it's written down.
   row, not a value to export. Flagged via `prediction_valid` /
   `prediction_invalid_reason` and nulled rather than written out looking
   legitimate.
-- **Gap, stated rather than silently absent**: unlike the forecasting
-  pipeline (`forecast_data_prep.check_turnover`, which nulls-and-logs a
-  negative/non-finite/non-numeric turnover value before it's used) and
-  `predict.validate_predictions` above (which validates the model's
-  OUTPUT), the estimation pipeline has **no equivalent check on Source 2's
-  raw, OBSERVED turnover value** before it's used as a training target —
-  `sample_construction.build_long_panel` only filters for `notna()`, and
-  `assemble.py`'s observed-turnover branch does the same. Checked against
-  the current labelled panel: **zero negative `total_turnover` values
-  exist today**, so this is not an active risk, but no guard exists if a
-  future data refresh (including the adjacent-company merge) introduces
-  one — flagged here as a real gap to close, not assumed safe by
-  omission.
+- **Observed-turnover validation** (`sample_construction.check_turnover`) —
+  **closed, previously a gap**: mirrors the forecasting pipeline's
+  `forecast_data_prep.check_turnover` exactly (same null-and-log shape,
+  never silently corrected) — non-numeric/negative/non-finite values in
+  Source 2's raw `total_turnover` are converted to missing and logged to
+  `turnover_quality_log.csv` before the row can become a training target,
+  closing the gap `predict.validate_predictions` above didn't cover (that
+  one validates the model's PREDICTED output, not the observed input).
+  Runs inside `build_long_panel`, so every caller (`sample_construction.
+  main()`, `feature_engineering.build_features()` — logged combined with
+  the negative-company-age check into `feature_engineering_quality_
+  log.csv`) gets the check automatically. Verified a no-op against the
+  current labelled panel (0 rows flagged, identical row counts
+  before/after) — a guard against a future data refresh (including the
+  adjacent-company merge), not a fix for an active problem today.
 - **Stale observed turnover** (`assemble.STALE_THRESHOLD_YEARS = 3`) —
   **flagged, not acted on yet**: `turnover_age_years` = (most recent year
   any company in the dataset filed) − (this company's observed year);
