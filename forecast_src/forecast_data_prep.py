@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_prep import COMPANY_ID_COL, prepare_source2
-from src.feature_engineering import STATIC_COLS, _melt_year_indexed
+from src.feature_engineering import STATIC_COLS, _melt_year_indexed, build_source1_annualization_factors
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
 from src.sample_construction import YEARS, build_long_panel, split_labelled_inference
 
@@ -142,7 +142,68 @@ PANEL_COLUMN_MAP = {
 # earlier years"). Left absent rather than aliased; see find_missing_fields.
 
 
-def build_historical_panel_source() -> pd.DataFrame:
+def annualize_turnover(
+    df: pd.DataFrame,
+    turnover_col: str,
+    year_col: str,
+    factors: pd.DataFrame,
+    id_col: str = COMPANY_ID_COL,
+    eligible_mask: pd.Series | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Applies build_source1_annualization_factors' (company_id, year) ->
+    annualization_factor lookup to a turnover column, correcting for
+    non-standard (non-52-week) accounting periods before that turnover value
+    can distort any year-over-year growth calculation downstream
+    (log_growth_1y, CAGR, gazelle streaks all walk these transitions later
+    in the forecasting pipeline). Missing factor (no Source 1 weeks value
+    for that company/year) defaults to 1.0 — no evidence of a non-standard
+    period is not evidence it wasn't standard, so the raw reported figure is
+    trusted as-is, same principle build_source1_annualization_factors itself
+    documents.
+
+    `eligible_mask` (aligned to `df`'s index) restricts which rows may be
+    corrected at all — used for the completed baseline, where a
+    `turnover_source="predicted"` row is a model output, not a real filing
+    tied to any actual accounting period, so annualizing it would be
+    correcting a number that was never anchored to a real calendar period in
+    the first place. Defaults to every row eligible (the historical panel's
+    case — every row there is a real filed year).
+
+    Returns (adjusted_df, log_df) — log_df records every row where the
+    factor was genuinely != 1.0 (old value, factor, new value), so the
+    correction is auditable rather than a silent multiply."""
+    df = df.copy()
+    if eligible_mask is None:
+        eligible_mask = pd.Series(True, index=df.index)
+
+    merged = df.merge(
+        factors.rename(columns={"year": year_col}), on=[id_col, year_col], how="left"
+    )
+    # factors is deduplicated on (id_col, year_col) inside
+    # build_source1_annualization_factors, so this left join can never fan
+    # out — asserted rather than assumed, since the next line relies on
+    # merged's row order/count matching df's exactly to restore the index.
+    assert len(merged) == len(df), "annualize_turnover: merge fanned out — factors not deduplicated?"
+    merged.index = df.index
+    merged["annualization_factor"] = merged["annualization_factor"].fillna(1.0)
+
+    adjusted_mask = (
+        (merged["annualization_factor"] != 1.0) & merged[turnover_col].notna() & eligible_mask
+    )
+    log_df = merged.loc[
+        adjusted_mask, [id_col, year_col, turnover_col, "weeks", "annualization_factor"]
+    ].copy()
+    log_df["annualized_turnover"] = log_df[turnover_col] * log_df["annualization_factor"]
+    log_df = log_df.rename(columns={turnover_col: "raw_turnover"})
+
+    merged.loc[adjusted_mask, turnover_col] = merged.loc[adjusted_mask, turnover_col] * merged.loc[
+        adjusted_mask, "annualization_factor"
+    ]
+    merged = merged.drop(columns=["weeks", "annualization_factor"])
+    return merged, log_df
+
+
+def build_historical_panel_source() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Builds the historical company-year panel fresh, covering all 4 mission
     groups (ACE, Beyond Earth, Resilient Earth, Cross-Cutting) — not the
     labelled_features.csv companies-in-training-eligible-missions-only
@@ -154,7 +215,15 @@ def build_historical_panel_source() -> pd.DataFrame:
     panel, without any of the grants/accelerator/Source3 features, which
     Cross-cutting's company-level growth models (persistence, CAGR) don't
     need and which haven't been verified to cover the Cross-cutting
-    population anyway."""
+    population anyway.
+
+    Returns (panel, annualization_log) — turnover is corrected for
+    non-standard accounting periods (annualize_turnover) before this frame
+    is written out, since every downstream forecast_src growth calculation
+    (log_growth_1y, CAGR, gazelle streaks) reads its turnover straight from
+    this panel. Fixing it here, once, at the earliest point turnover enters
+    the forecasting pipeline, means no individual growth formula needs its
+    own correction."""
     prepped, _ = prepare_source2()
     mapping = load_mapping()
     segmented, _ = segment_missions(prepped, mapping)
@@ -180,7 +249,10 @@ def build_historical_panel_source() -> pd.DataFrame:
     full_panel["company_age_years"] = full_panel["year"] - full_panel["founded_year"]
     full_panel.loc[full_panel["company_age_years"] < 0, "company_age_years"] = np.nan
 
-    return full_panel
+    factors = build_source1_annualization_factors(segmented)
+    full_panel, annualization_log = annualize_turnover(full_panel, "total_turnover", "year", factors)
+
+    return full_panel, annualization_log
 
 
 def find_missing_fields(df: pd.DataFrame, required_fields: list[str], dataset_name: str) -> pd.DataFrame:
@@ -436,10 +508,27 @@ def main() -> None:
     print(f"turnover_source (post-normalization): {baseline['turnover_source'].value_counts(dropna=False).to_dict()}")
     print(f"mission distribution: {baseline['mission'].value_counts(dropna=False).to_dict()}")
 
+    print("\n=== Filing-period annualization (non-standard accounting periods) ===")
+    prepped, _ = prepare_source2()
+    mapping = load_mapping()
+    segmented, _ = segment_missions(prepped, mapping)
+    annualization_factors = build_source1_annualization_factors(segmented)
+    # Only baseline_turnover rows anchored to a real filing ("observed") are
+    # eligible — a "predicted" baseline is the estimation model's own
+    # output, not tied to any actual accounting period, so there's nothing
+    # to annualize. turnover_source_raw is normalize_turnover_source's
+    # pre-remap value (stable for "observed" either way).
+    observed_mask = baseline["turnover_source_raw"] == "observed"
+    baseline, baseline_annualization_log = annualize_turnover(
+        baseline, "baseline_turnover", "baseline_year", annualization_factors, eligible_mask=observed_mask
+    )
+    print(f"Baseline rows corrected for a non-52-week filing period: {len(baseline_annualization_log)}")
+
     print("\n=== Historical company-year panel ===")
-    panel_source = build_historical_panel_source()
+    panel_source, panel_annualization_log = build_historical_panel_source()
     panel_source.to_csv(HISTORICAL_PANEL_SOURCE_PATH, index=False)
     print(f"Built {HISTORICAL_PANEL_SOURCE_PATH.relative_to(REPO_ROOT)} ({len(panel_source)} rows, 4 mission groups incl. Cross-Cutting)")
+    print(f"Historical panel rows corrected for a non-52-week filing period: {len(panel_annualization_log)}")
 
     panel_raw = pd.read_csv(HISTORICAL_PANEL_PATH)
     panel, panel_log, panel_gaps = validate_historical_panel()
@@ -471,6 +560,8 @@ def main() -> None:
     panel_log.to_csv(DATA_DIR / "forecast_panel_quality_log.csv", index=False)
     invalid_turnover_log.to_csv(DATA_DIR / "forecast_invalid_turnover_exclusions.csv", index=False)
     pd.concat([baseline_gaps, panel_gaps], ignore_index=True).to_csv(DATA_DIR / "forecast_field_gaps.csv", index=False)
+    baseline_annualization_log.to_csv(DATA_DIR / "forecast_baseline_annualization_log.csv", index=False)
+    panel_annualization_log.to_csv(DATA_DIR / "forecast_panel_annualization_log.csv", index=False)
 
     print(f"\nWrote {DATA_DIR / 'forecast_baseline_validated.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_baseline_quality_log.csv'}")
@@ -478,6 +569,8 @@ def main() -> None:
     print(f"Wrote {DATA_DIR / 'forecast_panel_quality_log.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_invalid_turnover_exclusions.csv'}")
     print(f"Wrote {DATA_DIR / 'forecast_field_gaps.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_baseline_annualization_log.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_panel_annualization_log.csv'}")
 
 
 if __name__ == "__main__":

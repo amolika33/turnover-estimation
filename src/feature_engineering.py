@@ -325,6 +325,59 @@ def merge_source1_ratio_features(df: pd.DataFrame, segmented_df: pd.DataFrame) -
     return df.merge(src1_features, on=[COMPANY_ID_COL, "year"], how="left")
 
 
+def build_source1_annualization_factors(segmented_df: pd.DataFrame) -> pd.DataFrame:
+    """Non-standard accounting periods (a company's first "stub" filing, or a
+    year-end change) mean a reported turnover figure doesn't always cover 52
+    weeks — verified against real data: 4.0% of Source 1 statement-years in
+    the space-company universe have a non-52-week period, ranging from a
+    4-week stub (13x if naively annualised) to an 82-week extended period
+    (0.63x). Left uncorrected, this silently distorts any year-over-year
+    growth comparison spanning one of these years (a stub year's turnover
+    looks like a huge apparent drop/spike relative to a normal adjacent
+    year, purely from the reporting-period mismatch, not real business
+    change) — the forecasting pipeline's log_growth_1y, CAGR, and gazelle
+    consecutive-growth-streak logic all walk exactly these year-over-year
+    transitions.
+
+    Unlike `build_source1_ratio_features` (Statement 1 / most recent filing
+    only — a single company-level snapshot), this covers ALL 10 Financial
+    Statement blocks: growth calculations span a company's ENTIRE observed
+    history, not just its latest filing, so every historical year needs its
+    own factor, not just the most recent one. Returned as (company_id, year,
+    weeks, annualization_factor) for a (company_id, year) merge — same
+    shape as build_source1_ratio_features, generalised across statements.
+
+    annualization_factor = 52 / weeks. Rows with no weeks value (Statement
+    block not present, or the field itself blank) are simply absent from
+    the returned frame — callers left-merge and fill missing factors with
+    1.0 (no correction applied), since a missing weeks value means there's
+    no evidence the period was non-standard, not evidence that it wasn't."""
+    src1 = load_source1()
+    frames = []
+    for i in range(1, 11):
+        date_col = f"Financial Statement {i} - Date of accounts"
+        weeks_col = f"Financial Statement {i} - Number of weeks in the accounting year"
+        if date_col not in src1.columns or weeks_col not in src1.columns:
+            continue
+        sub = src1[[URL_COL, date_col, weeks_col]].dropna(subset=[weeks_col]).copy()
+        sub = sub.rename(columns={date_col: "date_of_accounts", weeks_col: "weeks"})
+        sub["year"] = sub["date_of_accounts"].dt.year
+        frames.append(sub[[URL_COL, "year", "weeks"]])
+    if not frames:
+        return pd.DataFrame(columns=[COMPANY_ID_COL, "year", "weeks", "annualization_factor"])
+
+    allrows = pd.concat(frames, ignore_index=True).dropna(subset=["year"])
+    allrows["_url_norm"] = allrows[URL_COL].apply(_normalize_url)
+    url_lookup = _url_to_company_id(segmented_df)
+    matched = allrows.merge(url_lookup, on="_url_norm", how="inner").drop(columns=[URL_COL, "_url_norm"])
+    # Same rare-collision handling as build_source1_ratio_features/
+    # merge_source1_ratio_features: keep the first match for a given
+    # (company_id, year) rather than fanning out.
+    matched = matched.drop_duplicates(subset=[COMPANY_ID_COL, "year"])
+    matched["annualization_factor"] = 52.0 / matched["weeks"]
+    return matched[[COMPANY_ID_COL, "year", "weeks", "annualization_factor"]]
+
+
 def merge_source3_features(df: pd.DataFrame, segmented_df: pd.DataFrame) -> pd.DataFrame:
     """Shared by add_features (labelled panel) and predict.py's
     add_prediction_features (inference population) — same Source 3 join +

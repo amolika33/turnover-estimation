@@ -843,6 +843,76 @@ here.
       (company lookup, trajectory split, summary fields, flag membership)
       tested directly against Air Liquide with correct results.
 
+## Filing-period annualization (post-launch fix — non-standard accounting periods)
+
+`Financial Statement N - Number of weeks in the accounting year` (Source 1)
+was never used anywhere in either pipeline before this — a real gap,
+checked against real data rather than assumed: **4.0% of Source 1
+statement-years in the space-company universe have a non-52-week
+period** (a company's first "stub" filing, or a year-end change), ranging
+from a 4-week stub (13x if naively annualised) to an 82-week extended
+period (0.63x). Left uncorrected, this silently distorts any year-over-
+year growth comparison spanning one of these years — `log_growth_1y`,
+CAGR, and the gazelle consecutive-growth-streak logic all walk exactly
+these transitions, purely from the reporting-period mismatch, not real
+business change.
+
+**Fix**: `feature_engineering.build_source1_annualization_factors` extends
+the existing Source1<->Source2 merge (previously Statement 1 / most-recent-
+filing only, for the financial ratios above) across **all 10 Financial
+Statement blocks** — growth calculations span a company's entire observed
+history, not just its latest filing. `forecast_data_prep.annualize_turnover`
+applies `turnover x 52/weeks` (missing weeks -> factor 1.0, i.e. no
+correction — no evidence of a non-standard period is not evidence it
+wasn't standard) once, at the earliest point turnover enters the
+forecasting pipeline: the historical panel (`build_historical_panel_source`)
+and the completed baseline (only `turnover_source="observed"` rows — a
+`"predicted"` baseline is the estimation model's own output, not tied to
+any real filing period, so there's nothing to annualize). Fixing it this
+early means every downstream growth formula inherits the correction
+automatically, with no per-formula patch needed. Every correction is logged
+(`forecast_panel_annualization_log.csv`, `forecast_baseline_annualization_log.csv`)
+rather than applied silently.
+
+**Scope, deliberately NOT touching the estimation pipeline**: this only
+corrects the FORECASTING pipeline's own historical panel/baseline copies —
+`src/model_bakeoff.py`'s target (`total_turnover`, "Total Turnover (CH
+year)" per DATA_SCHEMA.md) and the mission-specific R² numbers reported
+elsewhere in this file are computed from a separate build
+(`labelled_features.csv`) that this fix never touches. Confirmed by a full
+pipeline re-run: `model_performance_summary.csv` (ACE 0.14 / Beyond Earth
+0.63 / Resilient Earth 0.65) is byte-identical before and after.
+
+**Real impact, measured via a full before/after pipeline re-run**:
+- Forecasting bake-off R² (12-candidate rolling-origin CV, all 3 missions):
+  small, single-digit-percentage-point movements in both directions (e.g.
+  ACE Elastic Net 0.9959 -> 0.9967; Resilient Earth Elastic Net 0.9398 ->
+  0.9295) — real but modest, consistent with ~2-4% of rows being corrected.
+- The actual DEPLOYED recursive mechanism (Persistence at horizon 1, used
+  to build every company's 2030 trajectory) is unchanged in all 3
+  missions — only some horizon-2/3/4+ benchmark comparisons (reporting-only,
+  never used to generate the trajectory itself) shifted.
+- Gazelle 10%: same total count (167) but real membership churn — 3
+  companies added, 3 removed (net zero, not "no change").
+- Gazelle 20%: 54 -> 56 (4 added, 2 removed).
+- £50M intersection: unchanged (same 77 companies).
+- £10M-by-2030 crossings: 9 -> 11 (2 clean additions: TransitionZero,
+  Trimble Maps — both cross once their corrected growth trajectory pushes
+  them over).
+- **TerraFarmer** (flagged earlier as a runaway-compounding outlier, £75,592
+  -> £721,789 in its only 2 real years): confirmed **partly, not wholly, a
+  filing-period artifact** — its 2023 filing covered 74 weeks (0.703x
+  factor), so the corrected baseline is £507,203, not £721,789 (30% lower).
+  The underlying jump from £75,592 is still substantial even corrected —
+  genuine strong growth remains, but the raw reported magnitude was
+  inflated by the non-standard filing period.
+- **GMV**: its own baseline year (2023) wasn't itself irregular, but an
+  earlier year in its history (2020, 61 weeks, 0.852x factor) was — once
+  corrected, GMV's overall historical growth trajectory shifts modestly,
+  moving its 2030 forecast from £22.8M (2.42x baseline) to £24.9M (2.64x),
+  a ~9% increase from a historical correction 3 years before its baseline,
+  not a dramatic change.
+
 ## Model improvement investigation (post-launch, independent of adjacent-company data)
 
 Four related pieces of work, requested together but kept independently
