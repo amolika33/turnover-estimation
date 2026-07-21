@@ -117,6 +117,11 @@ Formally: learn `y_hat_i = f(x_i)` from companies with observed turnover, then a
 - **One model selected independently per mission** — three separate winners
   are allowed, not one model forced across all three.
 
+**10th candidate added post-launch: CatBoost** (`model_bakeoff.py`), specifically
+for its native categorical handling — see "Model improvement investigation"
+near the end of this file for the full rationale, the sklearn-`clone()`
+compatibility bug it required working around, and per-mission results.
+
 ## Tech stack
 
 - Python, pandas, scikit-learn (Pipeline, ColumnTransformer, cross_val_score / GridSearchCV or RandomizedSearchCV)
@@ -159,6 +164,19 @@ engineering can be finalised.
   comment). 3 boolean signals (the two "scaleup" flags and "High growth
   list") were excluded as an unresolved turnover-derivation risk — see
   DATA_SCHEMA.md "Source 3" section.
+- **Source 1 financial ratios** (post-launch addition, same Source 1 file):
+  Financial Statement 1's ~20 financial ratios per company, checked for
+  turnover-derivation leakage before including any (formula-reconstructed
+  each ratio from its own components against real data — 6 reconstruct
+  exactly from a Turnover-based formula and are excluded; 9 never do and
+  are kept: `fs1_current_ratio`, `fs1_liquidity_acid_test`,
+  `fs1_gearing_pct`, `fs1_equity_pct`, `fs1_current_debt_ratio`,
+  `fs1_total_debt_ratio`, `fs1_roce_pct`, `fs1_rota_pct`, `fs1_ronae_pct`).
+  Merged on (company_id, year), not company_id alone — Statement 1 is one
+  snapshot tied to its own filing date, so treating it as a company-constant
+  (like `founded_year`) would leak a recent balance sheet into historical
+  panel rows. Full detail in "Model improvement investigation" below and
+  DATA_SCHEMA.md's "Source 1 financial ratios" section.
 
 ## Current status / build order (adjusted)
 
@@ -785,3 +803,135 @@ Separate pipeline stage, built on the completed dataset above — see
       cleanly (HTTP 200, no exceptions), and the underlying data logic
       (company lookup, trajectory split, summary fields, flag membership)
       tested directly against Air Liquide with correct results.
+
+## Model improvement investigation (post-launch, independent of adjacent-company data)
+
+Four related pieces of work, requested together but kept independently
+attributable per instruction (separate commits, separate findings below) —
+none of this replaces the mission-specific models (`src/model_bakeoff.py`,
+`src/model_selection.py`), which remain the pipeline's primary approach.
+
+### 1. CatBoost added to the mission-specific bake-off
+
+`model_bakeoff.py`'s candidate list is now 10 (9 original + CatBoost),
+specifically for its native categorical handling — relevant given
+`sic_code_1`'s high cardinality already forced `min_frequency` one-hot
+bucketing to stabilise the linear models (see the module docstring's
+1e83+ blow-up history). CatBoost gets its OWN preprocessor
+(`build_catboost_preprocessor`) that skips one-hot entirely and passes
+categorical columns through as imputed strings via CatBoost's
+`cat_features` — reusing the standard one-hot pipeline would have reduced
+it to "just another tree ensemble" and defeated the reason it was added.
+
+**Bug hit and fixed**: passing `cat_features` via the `CatBoostRegressor`
+constructor breaks sklearn's `clone()` (`RuntimeError: Cannot clone
+object ... constructor either does not set or modifies parameter
+cat_features` — a known CatBoost/sklearn `get_params` round-trip gap).
+`clone()` runs on every fold inside `GridSearchCV`/`TransformedTargetRegressor`,
+so this isn't avoidable by working around it once. Fixed by passing
+`cat_features` as a FIT-time parameter instead (`CATBOOST_FIT_KWARGS`,
+threaded through the same `"model__<param>"` mechanism already used for
+`sample_weight`) — the constructor stays clone-safe.
+
+`get_preprocessor(name)` centralises the preprocessor choice so
+`model_selection.py`'s final refit and `reporting.py`'s OOF-residual
+regeneration pick the right path when CatBoost wins a mission, not just
+the bake-off itself — both were updated. `catboost>=1.2` added to
+`requirements.txt`; `catboost_info/` (its auto-generated per-run training
+log directory) added to `.gitignore`.
+
+### 2. Source 1 financial ratios
+
+See "Data sources" above for the feature list and DATA_SCHEMA.md's "Source
+1 financial ratios" section for the full coverage/leakage-check tables.
+Headline: 9 balance-sheet ratios kept (confirmed never turnover-derived),
+6 excluded (confirmed or strongly suspected turnover-derived by formula
+reconstruction against real data). Year-anchored to Statement 1's own
+filing date — coverage in the merged panel is real but modest (~33% of
+the 367 labelled companies, ~4% of panel rows), a stated tradeoff to avoid
+leaking a recent balance sheet into historical rows.
+
+### 3. Mission-specific bake-off re-run: does CatBoost + the new ratios move R²?
+
+Re-ran `python -m src.model_bakeoff` (all 3 missions, 5x5 repeated grouped
+CV) with both additions in place, then `model_selection.py` to reselect.
+Comparison against the prior committed summary CSVs (9 models, Source
+2/3 features only):
+
+| Mission | Before (model, R2_mean) | After (model, R2_mean) | Selected model changed? |
+|---|---|---|---|
+| ACE | Lasso, 0.15 | Lasso, 0.14 | No — CatBoost R2_mean=-1.69 for ACE, far worse than Lasso |
+| Beyond Earth | Lasso, 0.62 | Lasso, 0.63 | No — CatBoost R2_mean=0.55, worse than Lasso |
+| Resilient Earth | Gradient Boosting, 0.61 | **CatBoost, 0.65** | **Yes** — CatBoost beat Gradient Boosting (0.62 after the ratios) |
+
+**Conclusion**: the ratio features moved R² by ~0.01 for ACE/Beyond Earth
+(noise-level — none of the 9 `fs1_*` features cracked ACE's or Resilient
+Earth's top-10 feature weights; `fs1_roce_pct` appears, minor, in Beyond
+Earth's) and by a real but modest ~0.01 for Resilient Earth's own best
+non-CatBoost model. **CatBoost does NOT help ACE** — it performs
+dramatically worse than Lasso there (-1.69 vs 0.14) despite the
+native-categorical advantage; the diagnostic below explains why (ACE's
+weakness isn't categorical-handling-shaped at all). CatBoost DOES help
+**Resilient Earth**, becoming its new selected model (R2_mean 0.61 -> 0.65)
+— the low-cardinality-categorical advantage plus tree-based handling of
+that mission's financial ratios evidently helps there specifically.
+`selected_models.csv` / `final_model_resilient_earth.joblib` updated
+accordingly; ACE remains `usable=True` (R2_mean=0.14 still clears the
+`USABILITY_R2_THRESHOLD=0.0` bar) but essentially unchanged.
+
+### 4. ACE worst-predicted-companies diagnostic — refining "small sample size"
+
+Regenerated `residuals_ace.csv` (post re-run) and traced the largest
+out-of-fold residuals. The naive "sum of absolute residual per row" view
+is misleading (dominated by BT's 12 high-scale rows) — the real diagnostic
+had to match `model_bakeoff.py`'s actual weighting (`sample_weight = 1 /
+company's row count`, i.e. every company gets equal total vote regardless
+of how many years it has).
+
+**Under that weighting, a tiny handful of companies dominate ACE's
+weighted sum-of-squared-error**: BT alone = 92.9%; BT + Babcock + Costain
+Group + Intelsat + Avanti together = 99.97% (of 80 companies total). BT,
+Babcock and Costain are large, DIVERSIFIED conglomerates (telecoms,
+defence/engineering, infrastructure) — confirmed via the raw Source 2 file
+that Beauhurst itself has **0% `Space %` documented for all three across
+every year** — their Total Turnover reflects their whole business, not a
+space-specific segment, and their scale (BT: 83,400 employees, ~1,242x
+ACE's median company) sits far outside the range ACE's other ~75 companies
+establish. Intelsat/Avanti are a second, distinct pattern: capital-intensive
+satellite operators (SIC 61300) with atypical revenue-per-employee ratios
+(Intelsat: ~£12M/employee vs ACE's median ~£203K, ~60x).
+
+**This concentration is NOT unique to ACE** — Beyond Earth shows an almost
+identical pattern (BAE Systems + Rolls Royce = 79.6% of its weighted SSE,
+top 5 = 99.1%; BAE Systems is even underestimated by almost exactly the
+same ~50-60% every year that BT is) — so "a few giant companies dominate
+the metric" is just what a heavy-tailed turnover target looks like in
+every mission, not an ACE-specific flaw. A single-fit, all-companies-at-once
+OOF check even shows ACE's R2≈0.69, comparable to Beyond Earth's ≈0.70 —
+the underlying model fit is not obviously worse for ACE than for Beyond
+Earth.
+
+**What actually differs, and the real mechanism connecting this to "small
+sample size"**: ACE has only 80 companies vs Beyond Earth's 202 (2.5x
+fewer), so under 5-fold `GroupKFold` each ACE outer test fold holds only
+~16 companies vs Beyond Earth's ~40. Checked directly against the 25
+repeated-CV folds: the worst observed fold (R2=-9.45) had **Avanti** —
+not BT — as its only large/volatile test company; when BT is in a
+fold's TRAINING set (not its test set), that fold's mean R2 collapses to
+~0.01 (std 2.26) vs ~0.66 (std 0.17) when BT is in the test set instead —
+consistent with a single extreme, high-leverage training point distorting
+the fitted coefficients enough to hurt generalisation to whichever OTHER
+16 companies land in that fold's test set. With ~2.5x fewer companies per
+fold than Beyond Earth, ACE has far less room to buffer against this.
+
+**Refined conclusion, replacing the bare "small sample size" framing**:
+ACE's low, volatile R2_mean/R2_std isn't primarily "not enough data to
+learn the relationship" (the aggregate fit is fine) — it's "too few
+companies per CV fold to dilute the leverage of a small number of
+structurally atypical companies" (huge diversified conglomerates with
+undocumented space-revenue share, plus capital-intensive satellite
+operators with volatile financials). This also explains CatBoost's poor
+showing for ACE specifically: the problem isn't categorical cardinality at
+all, so CatBoost's actual advantage is irrelevant there, and tree-based
+splitting generalises even worse than regularised linear regression with
+this few training companies and this much per-company leverage.
