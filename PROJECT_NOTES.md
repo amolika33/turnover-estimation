@@ -142,12 +142,12 @@ raw export + mission-tagged master sheet + grants/accelerator/funding
 enrichment) and open questions that need resolving before feature
 engineering can be finalised.
 
-- **Source 1**: `beauhurst_company_export_20260709-115139.csv.xlsx` — raw
+- **Source 1**: `space_companies_beauhurst_financials.xlsx` — raw
   Beauhurst export, repeated Financial Statement blocks.
 - **Source 2**: `Published Space Capabilities Catalogue_Cleaned.xlsx` —
   curated master/mission-tagged sheet, year-panel format. Primary source
   `feature_engineering.py` is built around.
-- **Source 3**: `beauhurst_company_export_20260720-092535.csv.xlsx` —
+- **Source 3**: `space_companies_beauhurst_grants_accelerators.xlsx` —
   grants/accelerator/funding enrichment for Source 1's company universe
   (same 1,372 rows), joined into the pipeline by Beauhurst URL. Added
   `feature_engineering.py` features: 8 boolean commercial/growth signals

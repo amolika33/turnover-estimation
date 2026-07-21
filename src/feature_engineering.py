@@ -31,8 +31,8 @@ from src.sample_construction import ID_COLS, YEARS, construct_samples
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
-SOURCE1_PATH = REPO_ROOT / "data" / "raw" / "beauhurst_company_export_20260709-115139.csv.xlsx"
-SOURCE3_PATH = REPO_ROOT / "data" / "raw" / "beauhurst_company_export_20260720-092535.csv.xlsx"
+SOURCE1_PATH = REPO_ROOT / "data" / "raw" / "space_companies_beauhurst_financials.xlsx"
+SOURCE3_PATH = REPO_ROOT / "data" / "raw" / "space_companies_beauhurst_grants_accelerators.xlsx"
 
 STATIC_COLS = {
     "Founded": "founded_year",

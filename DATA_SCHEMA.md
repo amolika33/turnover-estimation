@@ -34,7 +34,7 @@ this structure doesn't need to be rediscovered from scratch on every review.
 - Some columns visibly derive from Source 1 (same underlying Beauhurst data,
   reshaped) — expect overlap/duplication, not independent information.
 
-## Source 3: Grants/accelerator/funding enrichment (`beauhurst_company_export_20260720-092535.csv.xlsx`)
+## Source 3: Grants/accelerator/funding enrichment (`space_companies_beauhurst_grants_accelerators.xlsx`)
 
 - One row per company, **same 1,372-company universe as Source 1** (same row
   count, confirmed) — this is an *enrichment* file, not a new population. It
