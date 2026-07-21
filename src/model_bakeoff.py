@@ -289,7 +289,18 @@ def build_preprocessor(scale: bool) -> ColumnTransformer:
     categorical_pipeline = Pipeline(
         [
             ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", min_frequency=5)),
+            # sparse_output=False: found empirically once adjacent-company
+            # data raised sic_code_1's cardinality from a handful of
+            # space-company codes to 188 distinct codes (211 columns
+            # post-one-hot) — sklearn's RandomForest/ExtraTrees/
+            # GradientBoosting are dramatically slower fitting a sparse
+            # matrix at this scale (measured: 32.5s for 20 Random Forest
+            # trees on ACE's 16,510-row combined set, vs 1.1s dense — a
+            # ~29x slowdown that would have made the full bake-off
+            # infeasible). Dense is trivial memory-wise here (16.5k-43k
+            # rows x 211 columns, tens of MB) — not a tradeoff at this
+            # scale, a straightforward fix.
+            ("onehot", OneHotEncoder(handle_unknown="ignore", min_frequency=5, sparse_output=False)),
         ]
     )
     return ColumnTransformer(
