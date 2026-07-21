@@ -46,6 +46,8 @@ COLUMN_LABELS = {
     "data_type": "Data Type",
     "model_used": "Forecast Model Used",
     "growth_classification": "Growth Classification",
+    "turnover_lower": "Forecast Lower Bound (£, 95% CI)",
+    "turnover_upper": "Forecast Upper Bound (£, 95% CI)",
     "baseline_year": "Baseline Year",
     "baseline_turnover": "Baseline Turnover (£)",
     "turnover_2030": "Forecast Turnover 2030 (£)",
