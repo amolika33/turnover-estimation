@@ -276,6 +276,14 @@ def build_preprocessor(scale: bool) -> ColumnTransformer:
         log_steps.append(("scaler", StandardScaler()))
     plain_numeric_pipeline = Pipeline(plain_steps)
     log_numeric_pipeline = Pipeline(log_steps)
+    # min_frequency=5: a category seen fewer than 5 times in a training fold
+    # gets bucketed into one shared "infrequent" column instead of its own
+    # one-hot column — the fix for sic_code_1's high cardinality (see this
+    # module's docstring, the 1e83+ blow-up history). The value itself is a
+    # standard, conservative default (sklearn's own docs use 3-6 in worked
+    # examples), not empirically tuned against alternatives (3/10/etc.) for
+    # this specific dataset — flagged here as a threshold worth revisiting
+    # once adjacent-company data changes the categorical cardinality profile.
     categorical_pipeline = Pipeline(
         [
             ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),

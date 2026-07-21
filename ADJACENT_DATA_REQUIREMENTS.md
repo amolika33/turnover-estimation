@@ -25,6 +25,24 @@ the most recent filing (verified across all 1,372 space companies, zero
 violations) — safe to rely on for adjacent data too, but worth spot-checking
 once real files arrive rather than assuming it holds universally.
 
+**Key finding, changes what to ask for**: Source 1 and Source 3 (the
+grants/accelerator/funding enrichment file) turned out to be **the same
+underlying Beauhurst export schema, pulled ~11 days apart** — not two
+structurally different data types. Verified directly: both files carry
+identical-looking `Grants -`/`Fundraisings -`/`Accelerator Attendances -`/
+`Academic Spinout Events -`/`Growth signals -`/`Innovation signals -`
+columns, and cross-checking the two exports for the same companies shows
+99.2% agreement on grants count (fundraisings count agreement is lower,
+40.4%, because fundraising events get added on Beauhurst's platform between
+export dates — the later export is simply more current, not a different
+schema). **Practical implication: the adjacent-company pull needs only ONE
+Beauhurst export per company** — one that contains both the Financial
+Statement blocks and the grants/accelerator/signal columns together, as
+both Source 1 and Source 3 individually already do — not two separate
+files. Ask for a single, reasonably current export; don't request a
+second "enrichment" file unless the first one turns out to be missing
+these columns.
+
 ## 2. Companies House number, where available
 
 Populate a Companies House number field where the adjacent company has
@@ -63,6 +81,73 @@ or a clear filename convention (e.g. `adjacent_ace.xlsx`,
 `adjacent_beyond_earth.xlsx`, `adjacent_resilient_earth.xlsx`) the merge
 code can key off deterministically. Either works; consistency across all
 three files matters more than which convention is picked.
+
+## 4. Prioritized column shortlist (from `feature_source_mapping.csv`)
+
+Built by tracing every feature that actually appears in any mission's
+top-15 feature weights/importances — across both the estimation bake-off
+and the forecasting bake-off — back to its raw column (see
+`build_feature_source_mapping.py`, run to regenerate). The point: the
+adjacent-company pull does not need to replicate Source 1's full
+~1,100-column raw export (10 repeated statement blocks × ~110 base
+fields). It needs these ~20 base fields, confirmed to matter, ranked by
+how many of the 6 (mission, bake-off-system) combinations actually use a
+feature derived from each:
+
+**Source 2-equivalent fields** (or their nearest Source 1 analogue, if the
+adjacent export follows Source 1's schema per section 1 above — see
+DATA_SCHEMA.md's mapping between the two):
+- `Balance Sheet Total Assets` — used by 8 different top-15 features
+  across both bake-offs (the single highest-value field in the dataset).
+- `Total Employees` (CH/Estimated) — used by 6 top-15 features.
+- `Total Turnover` — the target itself; also feeds every lag/rolling/
+  growth feature in the forecasting bake-off (see below — CRITICAL,
+  jointly with the weeks field).
+- `Founded` — feeds `company_age_years`/`company_age`, used by 4.
+- `Size` (Company Size, year-indexed) — feeds `company_size`, used by 4.
+- `SIC Code 1` — used by 3 (plus 2 more specific SIC categories in the
+  forecasting bake-off).
+- `Total Export Revenue` — used by 2.
+- `Value Stream` — used by 1 (also the mission-assignment field itself —
+  required regardless of feature ranking).
+
+**Source 1/3 combined Beauhurst-export fields** (see the schema-overlap
+finding above — one export covers both groups):
+- **`Financial Statement N - Number of weeks in the accounting year` —
+  CRITICAL.** Not itself a top-15 feature, but required to correctly use
+  `Turnover` at all: this project's own historical data had 4.0% of
+  statement-years with a non-52-week accounting period (a 4-week stub up
+  to an 82-week extended filing), which silently distorted every
+  year-over-year growth calculation before being fixed (see
+  `PROJECT_NOTES.md`'s "Filing-period annualization" section). Without
+  this field, adjacent-company growth features/gazelle flags will carry
+  the same unfixed distortion this project's own data had.
+- `Financial Statement 1 - Return on capital employed (%)` — the one
+  Source 1 ratio that reached a top-15 list (Beyond Earth, estimation).
+- `Grants - Number of grants received by the company`,
+  `Grants - Total amount received by the company through grants (GBP)`.
+- `Fundraisings - Number of fundraisings completed by the company`.
+- `Growth signals - Debt fundraising`, `Growth signals - Equity
+  fundraising` (2 of the 8 non-leakage growth/innovation signals — these 2
+  specifically reached a top-15 list; the other 6 confirmed-safe signals
+  are still worth including for completeness but ranked lower).
+- `Accelerator Attendances 1-5 - Accelerator Name` (presence/count only).
+- `Academic Spinout Events 1/2 - Academic Institution Name` (presence
+  only).
+
+**Confirmed safe to skip** (per `feature_source_mapping.csv`'s "dropped"/
+"never_considered" rows — 44 of Source 1's ~110 base fields, 25 of Source
+2's ~44, 7 of Source 3's columns): the OECD/Beauhurst growth-rate columns
+(turnover-derived leakage), internal QA/administrative fields (`HPB:
+Normalised Score`, `CH Check`, `SAC Tagging`, `Comments`, `ST Type`,
+`Validated (CH & Beauhurst)`), all `Space *` breakdown columns (target is
+Total Turnover, never Space Turnover), `LinkedIn Industry` (redundant,
+high-cardinality instability risk), the raw grant/fundraising/accelerator
+NAME and DATE columns (only their presence/count is used, never the raw
+text), gender pay gap fields, valuations, banking provider, charges &
+mortgages, and tracking-reason columns. Whoever sources the adjacent data
+should not feel obliged to replicate any of these — see
+`feature_source_mapping.csv` for the complete row-by-row list and reasons.
 
 ## Not covered here (deferred to the actual merge implementation)
 

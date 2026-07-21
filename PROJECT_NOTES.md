@@ -293,6 +293,18 @@ plausible mission to borrow a model from, since none is given.
 - The `Value Stream == "Sky UK"` row is a data-entry error (own company name
   pasted into the field) — excluded from mission mapping entirely, not folded
   into Cross-cutting.
+- **Volante Global** (`ch_10993763_volanteglobal`) is excluded from mission
+  mapping entirely — `mission_segmentation.py`'s `KNOWN_MISCATEGORIZED_
+  COMPANIES` dict. Not a genuine space-sector company: SIC Code 1 = 70100,
+  LinkedIn Industry/Specialties = "Insurance"/"Insurance, Underwriting"
+  (Source 2), independently corroborated by Source 1's own description
+  ("Volante provides reinsurance and insurance products to clients across
+  various industries") and matching SIC code — same legal entity confirmed
+  across both sources (identical CH number and Beauhurst URL), but an
+  insurance/reinsurance holding group with no evident space-sector
+  business, regardless of which of its two reported turnover figures
+  (Source 1: £19,474,210 FY2024; Source 2: -£3,757,048) would apply. Same
+  treatment as Sky UK: excluded entirely, not folded into Cross-cutting.
 - 6 Companies House numbers in Source 2 were originally shared by multiple
   company rows (11 rows). 2 were confirmed data-entry errors and corrected
   in `data_prep.py` (GeoData Institute's bogus CH number nulled; ISVR
@@ -385,6 +397,19 @@ list is the third leg, not the only place it's written down.
   row, not a value to export. Flagged via `prediction_valid` /
   `prediction_invalid_reason` and nulled rather than written out looking
   legitimate.
+- **Gap, stated rather than silently absent**: unlike the forecasting
+  pipeline (`forecast_data_prep.check_turnover`, which nulls-and-logs a
+  negative/non-finite/non-numeric turnover value before it's used) and
+  `predict.validate_predictions` above (which validates the model's
+  OUTPUT), the estimation pipeline has **no equivalent check on Source 2's
+  raw, OBSERVED turnover value** before it's used as a training target —
+  `sample_construction.build_long_panel` only filters for `notna()`, and
+  `assemble.py`'s observed-turnover branch does the same. Checked against
+  the current labelled panel: **zero negative `total_turnover` values
+  exist today**, so this is not an active risk, but no guard exists if a
+  future data refresh (including the adjacent-company merge) introduces
+  one — flagged here as a real gap to close, not assumed safe by
+  omission.
 - **Stale observed turnover** (`assemble.STALE_THRESHOLD_YEARS = 3`) —
   **flagged, not acted on yet**: `turnover_age_years` = (most recent year
   any company in the dataset filed) − (this company's observed year);
@@ -416,6 +441,16 @@ list is the third leg, not the only place it's written down.
   `str()`-on-write — keeps the column machine-readable
   (`json.loads`-able) rather than a Python-repr string that's awkward to
   parse back.
+- **`OneHotEncoder(min_frequency=5)`** (`model_bakeoff.build_preprocessor`):
+  any categorical value seen fewer than 5 times in a training fold is
+  bucketed into a shared "infrequent" column rather than getting its own
+  one-hot column — the actual fix for `sic_code_1`'s high cardinality (see
+  this file's `model_bakeoff.py` docstring reference above and the module's
+  own docstring for the 1e83+ linear-model blow-up this was built to stop).
+  `5` is a standard, conservative default, not empirically tuned against
+  alternatives for this dataset specifically — flagged as a threshold worth
+  revisiting once adjacent-company data changes the categorical cardinality
+  profile.
 - **`linkedin_industry` dropped from the feature set entirely**
   (`feature_engineering.py`'s `DROPPED_COLUMNS`, removed from `STATIC_COLS`
   and `FEATURE_COLUMNS`; also removed from `model_bakeoff.py`'s
