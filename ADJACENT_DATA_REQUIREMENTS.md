@@ -182,11 +182,14 @@ adjacent row has entered `sample_construction.py`/`feature_engineering.py`/
   company appearing in an adjacent file (unlikely but not impossible given
   ~23k rows) — not addressed; flag if it turns out to matter once real
   data is in hand.
-- Whether/how to apply the filing-period annualization fix to the
-  reconstructed adjacent turnover panel (4.9% non-52-week rows found,
-  same order of magnitude as the original space-company data) — left
-  un-annualized for now, matching the estimation pipeline's own precedent,
-  but this should be revisited once the panel is actually merged in.
 - A Companies House API lookup to recover real incorporation dates for
   `company_age_years` (12,127 companies) — flagged as worth pursuing, not
   scoped or built.
+
+**Update**: the filing-period annualization fix (`turnover x
+52/actual_weeks`) has now been applied to the reconstructed adjacent
+turnover panel — see PROJECT_NOTES.md "Adjacent-company groundwork" #6.
+Unlike the space-company estimation target, this panel had no existing
+in-production number to preserve, so it was corrected immediately rather
+than deferred. 3,719 of 106,805 (company, year) rows were corrected
+(48.1% of those by more than 30%) — no longer an open item.

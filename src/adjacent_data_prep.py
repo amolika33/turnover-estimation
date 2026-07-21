@@ -35,11 +35,14 @@ groundwork" for the full write-up):
 6. Turnover-by-year panel: reconstructed from the 10 Financial Statement
    blocks (`Date of accounts` -> year, `Turnover` -> value), the same
    anchoring convention build_source1_annualization_factors already uses
-   for space companies. Returned un-annualized (raw turnover + weeks
-   side by side), matching the estimation pipeline's own precedent of
-   NOT annualizing its own target — see PROJECT_NOTES.md's "Filing-period
-   annualization" section for why that was a deliberate choice, not an
-   oversight.
+   for space companies, then corrected for non-standard accounting
+   periods (`turnover x 52/actual_weeks`) via forecast_data_prep's
+   existing `annualize_turnover` — reused directly, not reimplemented —
+   before this panel is ever merged into training. Unlike the space-
+   company estimation target (deliberately left un-annualized, see
+   PROJECT_NOTES.md's "Filing-period annualization"), this panel hasn't
+   entered training yet, so there's no existing reported number to
+   preserve — corrected up front instead.
 """
 from pathlib import Path
 
@@ -48,6 +51,7 @@ import pandas as pd
 
 from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, make_company_id
 from src.mission_segmentation import REAL_MISSIONS
+from forecast_src.forecast_data_prep import annualize_turnover
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
@@ -161,8 +165,10 @@ def build_turnover_panel(df: pd.DataFrame) -> pd.DataFrame:
     """Reconstructs a (company_id, year, turnover, weeks) long panel from
     the 10 Financial Statement blocks — the adjacent-file equivalent of
     Source 2's Total Turnover {year} columns, which don't exist here.
-    Returned un-annualized (raw turnover alongside its weeks value) — see
-    module docstring decision 6."""
+    Turnover here is still raw (un-annualized) — annualize_adjacent_panel
+    applies the correction afterward, once across the combined multi-
+    mission panel (see its docstring for why it can't be done per-mission
+    here)."""
     frames = []
     for i in range(1, N_STATEMENTS + 1):
         date_col = f"Financial Statement {i} - Date of accounts"
@@ -184,6 +190,36 @@ def build_turnover_panel(df: pd.DataFrame) -> pd.DataFrame:
     # more recent statement wins if two statements ever resolve to the
     # same calendar year, same precedent as build_source1_ratio_features.
     return allrows.drop_duplicates(subset=[COMPANY_ID_COL, "year"])
+
+
+def annualize_adjacent_panel(panel_all: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Applies the existing annualize_turnover (forecast_data_prep.py) to
+    the combined, multi-mission adjacent turnover panel — reused directly,
+    not reimplemented, same `turnover x 52/weeks` correction already
+    proven on space-company data.
+
+    Must run on the COMBINED panel (all 3 missions concatenated), not
+    per-mission: a multi-mission-overlap company (decision 2) contributes
+    one turnover-panel row per mission it appears in, so the same
+    (company_id, year) pair can appear more than once in panel_all. The
+    `factors` lookup annualize_turnover expects must be deduplicated to
+    exactly one row per (company_id, year) — built here directly from
+    this panel's own `weeks` column (no separate Source 1 join needed,
+    unlike the space-company case, since turnover and weeks already come
+    from the same Financial Statement row) — otherwise its merge would
+    fan out across mission copies of the same company-year.
+
+    Returns (annualized_panel, log) — log records only the genuinely
+    corrected rows (raw_turnover, weeks, annualization_factor,
+    annualized_turnover), same shape annualize_turnover always returns."""
+    factors = (
+        panel_all[[COMPANY_ID_COL, "year", "weeks"]]
+        .drop_duplicates(subset=[COMPANY_ID_COL, "year"])
+        .assign(annualization_factor=lambda d: 52.0 / d["weeks"])
+    )
+    df_for_annualize = panel_all.drop(columns=["weeks"])
+    adjusted, log = annualize_turnover(df_for_annualize, "turnover", "year", factors, id_col=COMPANY_ID_COL)
+    return adjusted, log
 
 
 def main() -> None:
@@ -213,12 +249,34 @@ def main() -> None:
     static_all = pd.concat(static_frames, ignore_index=True)
     panel_all = pd.concat(panel_frames, ignore_index=True)
 
+    n_raw = len(panel_all)
+    n_non52 = (panel_all["weeks"] != 52).sum()
+    panel_all, annualization_log = annualize_adjacent_panel(panel_all)
+
+    print("\n=== Filing-period annualization (adjacent panel) ===")
+    print(f"Total (company, year) rows: {n_raw}")
+    print(f"Non-52-week rows: {n_non52} ({n_non52 / n_raw:.1%})")
+    print(f"Rows actually corrected (factor != 1.0 and turnover present): {len(annualization_log)}")
+    if len(annualization_log):
+        pct_distortion = (annualization_log["annualization_factor"] - 1).abs()
+        n_over_30pct = (pct_distortion > 0.30).sum()
+        print(f"Rows with >30% distortion: {n_over_30pct} ({n_over_30pct / len(annualization_log):.1%} of corrected rows)")
+        print(f"Distortion factor range: {annualization_log['annualization_factor'].min():.2f}x - {annualization_log['annualization_factor'].max():.2f}x")
+        print(f"Distinct companies affected: {annualization_log[COMPANY_ID_COL].nunique()}")
+        by_mission = annualization_log.merge(
+            panel_all[[COMPANY_ID_COL, "year", "mission"]], on=[COMPANY_ID_COL, "year"], how="left"
+        )
+        print("Corrected rows by mission:", by_mission["mission"].value_counts().to_dict())
+
     static_path = OUTPUT_DIR / "adjacent_static_features.csv"
     panel_path = OUTPUT_DIR / "adjacent_turnover_panel.csv"
+    log_path = OUTPUT_DIR / "adjacent_turnover_annualization_log.csv"
     static_all.to_csv(static_path, index=False)
     panel_all.to_csv(panel_path, index=False)
+    annualization_log.to_csv(log_path, index=False)
     print(f"\nWrote {static_path} ({len(static_all)} rows, {static_all[COMPANY_ID_COL].nunique()} distinct companies)")
-    print(f"Wrote {panel_path} ({len(panel_all)} rows)")
+    print(f"Wrote {panel_path} ({len(panel_all)} rows, turnover now annualized)")
+    print(f"Wrote {log_path} ({len(annualization_log)} corrected rows)")
 
 
 if __name__ == "__main__":

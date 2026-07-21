@@ -304,16 +304,17 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
 50. **`total_export_revenue` for adjacent companies**: no substitute field
     exists in the raw export — left null, standard imputation applies. ✅
     `PROJECT_NOTES.md` "Adjacent-company groundwork" #5.
-51. **Adjacent turnover-by-year panel, un-annualized**: reconstructed from
-    the 10 Financial Statement blocks (same statement-to-year anchoring as
-    `build_source1_annualization_factors`), returned un-annualized to
-    match the estimation pipeline's existing precedent of not annualizing
-    its own target. 4.9% of reconstructed (company, year) rows have a
-    non-52-week accounting period — same order of magnitude as the
-    original space-company finding — flagged as needing revisiting once
-    this panel is actually merged into training/forecasting, not resolved
-    here. ✅ `PROJECT_NOTES.md` "Adjacent-company groundwork" #6;
-    `ADJACENT_DATA_REQUIREMENTS.md` "Not covered here".
+51. **Adjacent turnover-by-year panel, annualized before merge**:
+    reconstructed from the 10 Financial Statement blocks (same
+    statement-to-year anchoring as `build_source1_annualization_factors`),
+    then corrected for non-standard accounting periods (`turnover x
+    52/actual_weeks`) via forecast_data_prep's existing `annualize_turnover`
+    — reused directly, applied before any merge into training, not
+    deferred. 4.9% of (company, year) rows had a non-52-week period;
+    3,719 of those had a turnover value to correct, 48.1% of which were
+    distorted by more than 30% — comparable severity to the original
+    space-company finding (57%). ✅ `PROJECT_NOTES.md` "Adjacent-company
+    groundwork" #6; `ADJACENT_DATA_REQUIREMENTS.md` "Update" note.
 
 ## Summary
 

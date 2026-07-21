@@ -1203,13 +1203,33 @@ later decision.
    Statement blocks (`Date of accounts` -> year, `Turnover` -> value),
    the same statement-to-year anchoring convention
    `build_source1_annualization_factors` already uses for space companies
-   (`build_turnover_panel`). Returned **un-annualized** — raw turnover
-   alongside its own `weeks` value — matching this project's existing
-   precedent of leaving the estimation pipeline's own target
-   un-annualized (see "Filing-period annualization" above for why that
-   was a deliberate choice). Worth noting: **4.9% of the reconstructed
-   panel's (company, year) rows have a non-52-week accounting period**
-   (5,278/106,805) — essentially the same order of magnitude as the 4.0%
-   found in the original space-company data, so the same annualization
-   question will need answering here too, if/when this panel is actually
-   merged into training or forecasting.
+   (`build_turnover_panel`), **then annualized** (`turnover x
+   52/actual_weeks`) via forecast_data_prep's existing `annualize_turnover`
+   — reused directly, not reimplemented (`annualize_adjacent_panel`).
+   Unlike the space-company estimation target (deliberately left
+   un-annualized, since it was already a reported, in-production number —
+   see "Filing-period annualization" above), this panel hasn't entered
+   training yet, so there's no existing number to preserve: corrected up
+   front instead of deferred.
+
+   **Scope, verified**: 4.9% of the reconstructed panel's (company, year)
+   rows have a non-52-week accounting period (5,278/106,805) — the same
+   order of magnitude as the 4.0% found in the original space-company
+   data. Of those, 3,719 also had a turnover value to actually correct
+   (the other 1,559 have a non-standard period but no turnover figure —
+   nothing to annualize). **Of the 3,719 corrected rows, 48.1% (1,790)
+   were distorted by more than 30%** — again similar in severity to the
+   original finding (57% there) — with individual correction factors
+   ranging from 0.50x to 13.00x (a 4-week stub filing). 3,187 distinct
+   companies affected, split 975 ACE / 1,093 Beyond Earth / 2,019
+   Resilient Earth (a row can count toward more than one mission for a
+   multi-mission-overlap company). `adjacent_turnover_annualization_log.csv`
+   records every corrected row (raw/annualized turnover, weeks, factor)
+   for audit.
+
+   **Implementation note**: annualize_turnover's `factors` argument must
+   be deduplicated to one row per (company_id, year) — a multi-mission
+   company contributes one turnover-panel row per mission it appears in
+   (decision 2), so annualization runs on the 3-mission-combined panel
+   with factors built once per (company_id, year), not per mission,
+   to avoid the merge fanning out.
