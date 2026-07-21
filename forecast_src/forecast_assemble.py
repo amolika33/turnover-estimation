@@ -51,9 +51,14 @@ def build_full_trajectories(real_panel: pd.DataFrame, predicted: pd.DataFrame, b
     )
     baseline_rows["data_type"] = "estimated_baseline"
 
-    predicted_rows = predicted[
-        ["company_id", "mission", "accounting_year", "turnover", "model_used", "growth_classification"]
-    ].copy()
+    predicted_cols = ["company_id", "mission", "accounting_year", "turnover", "model_used", "growth_classification"]
+    # turnover_lower/turnover_upper (forecast_prediction_intervals.py) are
+    # optional here — carried through when present so downstream consumers
+    # (the dashboard) get the confidence band without forecast_assemble.py
+    # needing to know how they were computed, but this module must still
+    # work if intervals haven't been generated yet.
+    interval_cols = [c for c in ["turnover_lower", "turnover_upper"] if c in predicted.columns]
+    predicted_rows = predicted[predicted_cols + interval_cols].copy()
     predicted_rows["data_type"] = "predicted"
 
     full = pd.concat([observed, baseline_rows, predicted_rows], ignore_index=True)

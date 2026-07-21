@@ -711,3 +711,64 @@ Separate pipeline stage, built on the completed dataset above — see
      gazelle-qualifying or not). The gate is a safeguard against a future
      data refresh or parameter change reintroducing that failure mode, not
      evidence that it's unnecessary now.
+10. ✅ `forecast_prediction_intervals.py` — presentation-layer additions
+    beyond the original build order, added at the user's request once the
+    9-step pipeline was complete.
+    - **`export_excel_workbook.py`**: consolidates the completed baseline
+      (`assemble.py`) + all 6 `forecast_reporting.py` outputs into one
+      `.xlsx` (`data/output/turnover_forecast_workbook.xlsx`), presentable
+      column headers via a shared `COLUMN_LABELS` map, frozen + bolded
+      header row, content-sized columns.
+    - **Residual-based prediction intervals, stratified by evidence
+      group**: added to `forecast_trajectories.csv`
+      (`turnover_lower`/`turnover_upper`), carried through
+      `forecast_full_trajectories.csv` by `forecast_assemble.py`. Method:
+      - *Per-step spread*: the deployed horizon=1 mechanism is Persistence
+        for the "stable" majority (forecast_selection.py's actual winner
+        in all 3 real missions), and Persistence's log-space residual has
+        a clean closed form — predicting turnover_t+1=turnover_t means
+        log1p(actual)-log1p(predicted) is exactly log1p(turnover_t+1)-
+        log1p(turnover_t), i.e. `log_growth_1y` itself. So Persistence's
+        historical out-of-fold residual distribution IS the real,
+        already-computed `log_growth_1y` values — no refitting, no
+        leakage risk (Persistence has no parameters to fit). `sigma_log_
+        residual` = std of real `log_growth_1y`, computed separately per
+        (mission, `forecast_evidence_group`) from real transitions only,
+        never from recursion's own synthetic predictions.
+      - *Stated scope, not silent*: this uses Persistence's residual
+        spread uniformly for every predicted row, even "growing" steps
+        actually produced by Ridge/CAGR — those likely carry their own,
+        probably wider, true uncertainty, not modelled separately here.
+        Read the band as a lower bound specifically for
+        growth_classification="growing" rows.
+      - *Fallback for thin groups* (`MIN_SAMPLES_FOR_GROUP_SPREAD = 5`):
+        Group C (exactly 1 real year) and Group D (0 real years) have NO
+        real transition at all — structurally undefined, not just sparse.
+        **First attempt rejected on inspection**: falling back to the
+        mission's pooled std (all groups combined) landed Group D within
+        a few percent of Group A's own spread, since Group A's much
+        larger sample (575-1564 vs Group B's 6-15 real transitions)
+        dominates a size-weighted pool — backwards for a group with LESS
+        evidence, and it would make Group D look nearly as confident as
+        the best-evidenced tier. **Fixed**: fall back to the WORST
+        (highest-std) tier that still clears the sample-size bar
+        (empirically Group B in every mission, 2.5-3.5x more volatile
+        than Group A's real transitions) — keeps the ordering correctly
+        monotonic, A tightest, B/C/D anchored to B's wider spread.
+      - *Widening with horizon*: standard random-walk h-step-ahead
+        variance under an independent-errors assumption — cumulative
+        log-space variance after `step` recursive steps is
+        `step * sigma_log_residual^2`, so cumulative log-space std is
+        `sigma_log_residual * sqrt(step)` (same sqrt(horizon) growth used
+        in ARIMA-style h-step intervals). `turnover_lower/upper =
+        expm1(log1p(turnover) -+ 1.96 * sigma_log_residual * sqrt(step))`,
+        Z=1.96 (~95%, a stated standard choice) — clipped at 0 below.
+        Baseline/observed/estimated_baseline rows get no interval (NaN):
+        they're real filed data or the OTHER pipeline's point value, not
+        this pipeline's own uncertainty to characterise.
+      - **Verified stratification works**: comparing Air Liquide (Group A)
+        against DEOS Consultancy (Group D) at matching step counts — step
+        1: upper/lower width ratio 5.7x (Group A) vs 348x (Group D, 61x
+        wider); step 6-7 (2030): 99x vs ~1.68 million x. Confirms Group A
+        bands are visibly, dramatically tighter than Group D's, as
+        intended.
