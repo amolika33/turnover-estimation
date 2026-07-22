@@ -316,6 +316,56 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
     space-company finding (57%). ✅ `PROJECT_NOTES.md` "Adjacent-company
     groundwork" #6; `ADJACENT_DATA_REQUIREMENTS.md` "Update" note.
 
+## Adjacent-company integration: bake-off (this session — real training merge, not groundwork)
+
+52. **Space-only outer CV split** (`make_space_only_outer_splits`,
+    `src/model_bakeoff.py`): required since early in this project but not
+    buildable until real adjacent data existed to test against (see the
+    original "Current status / build order" step 3). Outer test folds
+    contain space companies only; outer training folds may include
+    adjacent rows (adjacent rows are never held out — they appear in
+    every outer training fold); inner hyperparameter-tuning CV stays
+    pooled. Verified directly: across every fold/repeat, test-fold
+    `population_type` is 100% `"space"`. ✅ `PROJECT_NOTES.md`
+    "Adjacent-company integration: bake-off results".
+53. **`ADJACENT_SAMPLE_WEIGHT` tuning methodology**: empirically tuned per
+    mission (0.2/0.5/1.0 candidates) rather than assumed at its 0.5
+    placeholder, using a fast 3-model proxy (Lasso/Random Forest/CatBoost,
+    single 5-fold pass) rather than the full model zoo, for tractability.
+    Winning weight = highest mean R2 across the 3 proxy models. Result:
+    ACE=0.2, Beyond Earth=1.0, Resilient Earth=0.2 — confirms a single
+    global constant would have been a real simplification (not one value
+    fits all three). ✅ `PROJECT_NOTES.md` "Adjacent-company integration:
+    bake-off results".
+54. **SVR excluded from the adjacent-integrated bake-off**: evidence-based,
+    not arbitrary — weakest or near-weakest model in every bake-off this
+    project has run (estimation: R2=-0.43/0.27/0.48 across the 3 missions;
+    forecasting: an order of magnitude worse MAE than every other model at
+    every horizon), and the 2nd-slowest single model in the initial ACE
+    timing probe despite that weak performance. ✅ `PROJECT_NOTES.md`
+    "Adjacent-company integration: bake-off results".
+55. **`OneHotEncoder(sparse_output=False)`**: changed from sklearn's sparse
+    default once adjacent data raised `sic_code_1`'s cardinality to 188
+    codes — measured a ~29x slowdown for Random Forest/Extra Trees on
+    sparse input at this scale (32.5s vs. 1.1s for 20 trees). Dense output
+    is trivial memory-wise at this row count (tens of MB) — a straight
+    performance fix, no effect on model output. Also checked: adding
+    `n_jobs=-1` to RandomForestRegressor/ExtraTreesRegressor on top of
+    GridSearchCV's existing `n_jobs=-1` gives no additional speedup on
+    this 4-core environment (measured 29.2s vs. 30.9s) — joblib's
+    nested-parallelism guard already prevents oversubscription, so this
+    was NOT applied. ✅ `PROJECT_NOTES.md` "Adjacent-company integration:
+    bake-off results".
+56. **Single 5-fold pass, not the standard 5-repeat (25-fold) config**: a
+    disclosed compute tradeoff for the adjacent-integrated bake-off only
+    — the original space-only bake-offs (#1-45 above) remain at full
+    5-repeat rigor, unaffected. A confirmatory 5-repeat pass (Extra Trees
+    only, ACE + Beyond Earth only) is the natural next check before any
+    production model-switch decision. ⚠️ Not yet resolved — flagged here
+    pending that confirmatory run, see `PROJECT_NOTES.md` "Adjacent-company
+    integration: bake-off results" for the single-pass R2/R2_std this
+    caveat applies to.
+
 ## Summary
 
 - **41 of 45** were already documented somewhere before this pass (33
@@ -336,3 +386,10 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
 - **#46-51** (a later session): 6 new decisions made once the real
   adjacent-company files arrived, all documented in `PROJECT_NOTES.md`'s
   "Adjacent-company groundwork" section at the time they were made.
+- **#52-56** (the real training-merge session): the space-only CV split,
+  empirical weight tuning, the evidence-based SVR exclusion, the
+  OneHotEncoder performance fix, and the single-pass caveat — all
+  documented in `PROJECT_NOTES.md`'s "Adjacent-company integration:
+  bake-off results" section. #56 is the one still-open item: a
+  confirmatory 5-repeat pass is pending before any production
+  model-switch decision.

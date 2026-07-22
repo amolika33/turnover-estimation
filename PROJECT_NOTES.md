@@ -1233,3 +1233,149 @@ later decision.
    (decision 2), so annualization runs on the 3-mission-combined panel
    with factors built once per (company_id, year), not per mission,
    to avoid the merge fanning out.
+
+## Adjacent-company integration: bake-off results (real integration, not groundwork)
+
+Full end-to-end integration of adjacent-company data into training, per
+mission (`src/model_bakeoff.get_mission_features_with_adjacent`,
+`make_space_only_outer_splits`) — a step further than the groundwork
+section above, which only built the adjacent feature frames without
+merging them into any model. Staged as: (1) company_id + population_type
+tagging, (2) merge into each mission's TRAINING population only (the
+inference/prediction population and predict.py are completely untouched —
+adjacent companies never receive their own turnover prediction, per the
+methodology's original design), (3) a space-only outer CV split (outer
+test folds are space companies only; outer training folds may include
+adjacent rows; the inner hyperparameter-tuning CV stays pooled), (4) an
+empirical `ADJACENT_SAMPLE_WEIGHT` tuning sweep, (5) the full bake-off.
+
+**A real, measured performance problem was found and fixed along the
+way**: `OneHotEncoder`'s default sparse output made Random Forest/Extra
+Trees/Gradient Boosting dramatically slower once adjacent data raised
+`sic_code_1`'s cardinality to 188 distinct codes (211 one-hot columns) —
+measured 32.5s for 20 Random Forest trees sparse vs. 1.1s dense, a ~29x
+slowdown. Fixed via `sparse_output=False` in `build_preprocessor`
+(`src/model_bakeoff.py`) — dense is trivial memory-wise at this row count
+(tens of MB), not a real tradeoff. Confirmed this was a genuine bottleneck
+(GridSearchCV already ran in parallel; adding `n_jobs=-1` to the
+individual RandomForestRegressor/ExtraTreesRegressor on top of that gave
+no additional speedup — 29.2s vs 30.9s measured — since joblib's
+nested-parallelism guard already prevents oversubscription on this
+4-core environment).
+
+**SVR excluded from the adjacent-integrated bake-off** — an evidence-based
+cut, not an arbitrary one: SVR was the weakest or near-weakest model in
+every bake-off already run this project. Estimation: ACE R2=-0.43, Beyond
+Earth R2=0.27, Resilient Earth R2=0.48 (near/at the bottom among
+non-exploding models in all 3). Forecasting: an order of magnitude worse
+MAE than every other model at every horizon (e.g. horizon 1: SVR
+MAE=3.28e8 vs. 2.7e7-3.5e7 for Persistence/Lasso/Extra Trees/Linear
+Regression). It was also the 2nd-slowest single model in the initial ACE
+timing probe (318s) despite that weak performance, and RBF-kernel SVR
+scales worse than linearly with row count — the wrong combination
+(expensive AND weak) once the training set grew 20-60x.
+
+**ADJACENT_SAMPLE_WEIGHT tuning sweep** (Lasso/Random Forest/CatBoost,
+single 5-fold pass, 3 candidate weights — a fast proxy subset chosen for
+tractability, not the full model zoo): winning weight (highest mean R2
+across the 3 tuning models) per mission:
+
+| Mission | Winning weight |
+|---|---|
+| ACE | 0.2 |
+| Beyond Earth | 1.0 |
+| Resilient Earth | 0.2 |
+
+Full sweep results: `data/processed/adjacent_weight_tuning_sweep.csv`.
+ACE and Resilient Earth preferred the lightest weighting tried (adjacent
+rows trusted least); Beyond Earth's Random Forest specifically was
+unstable across weights (R2 swung 0.16 to 0.72 from weight 0.2 to 1.0),
+pulling its mean toward the highest weight — worth revisiting if Beyond
+Earth's adjacent-augmented model is ever taken further, since that
+instability wasn't explained here.
+
+**Final bake-off** (all 9 remaining models — SVR excluded — single 5-fold
+pass, each mission at its own winning weight, space-only outer test
+folds; full `data/processed/model_bakeoff_adjacent_{mission}_summary.csv`
+/ `_folds.csv`):
+
+*ACE (weight=0.2):*
+
+| Model | MAE | RMSE | R2 mean (std) |
+|---|---|---|---|
+| **Extra Trees** | 42.8M | 141.6M | **0.83 (0.15)** |
+| Random Forest | 67.9M | 318.0M | 0.81 (0.16) |
+| CatBoost | 131.3M | 491.9M | 0.70 (0.20) |
+| Lasso | 177.1M | 556.8M | 0.70 (0.20) |
+| Elastic Net | 203.4M | 633.5M | 0.68 (0.20) |
+| Gradient Boosting | 116.6M | 445.3M | 0.66 (0.25) |
+| Ridge | 438.9M | 1258.5M | 0.40 (0.48) |
+| Linear Regression | 448.9M | 1285.8M | 0.16 (0.75) |
+| k-NN | 336.6M | 1117.7M | 0.14 (0.25) |
+
+*Beyond Earth (weight=1.0):*
+
+| Model | MAE | RMSE | R2 mean (std) |
+|---|---|---|---|
+| **Extra Trees** | 75.3M | 378.8M | **0.79 (0.25)** |
+| Gradient Boosting | 96.9M | 431.4M | 0.76 (0.23) |
+| Lasso | 113.4M | 443.1M | 0.76 (0.19) |
+| Random Forest | 89.0M | 422.8M | 0.72 (0.31) |
+| CatBoost | 136.2M | 633.6M | 0.72 (0.22) |
+| Elastic Net | 144.3M | 570.4M | 0.69 (0.20) |
+| Linear Regression | 173.4M | 757.6M | 0.64 (0.23) |
+| Ridge | 179.9M | 825.4M | 0.64 (0.20) |
+| k-NN | 141.1M | 582.4M | 0.44 (0.65) |
+
+*Resilient Earth (weight=0.2):*
+
+| Model | MAE | RMSE | R2 mean (std) |
+|---|---|---|---|
+| Gradient Boosting | 32.3M | 99.9M | 0.67 (0.16) |
+| CatBoost | 32.4M | 99.2M | 0.65 (0.12) |
+| Random Forest | 32.3M | 103.2M | 0.63 (0.24) |
+| Extra Trees | 33.1M | 105.5M | 0.62 (0.17) |
+| Ridge | 37.6M | 113.3M | 0.55 (0.18) |
+| k-NN | 47.1M | 134.2M | 0.14 (0.53) |
+| Elastic Net | 49.7M | 144.7M | 0.06 (0.11) |
+| Lasso | 53.1M | 149.9M | -0.07 (0.15) |
+| Linear Regression | 58.0M | 166.5M | -1.17 (3.42) |
+
+**ACE: the three-way comparison.** This is the headline result — ACE was
+the specific mission the pooled-model hedge (see "Pooled model bake-off"
+above) suggested might benefit from more data:
+
+| | Model | R2 |
+|---|---|---|
+| Original mission-specific (currently deployed) | Lasso | 0.14-0.15 |
+| Pooled hedge (space companies pooled across all 3 missions) | Random Forest | 0.36 |
+| **Adjacent-augmented, mission-specific (this result)** | **Extra Trees** | **0.83** |
+
+R2=0.83 is not a marginal gain over the pooled hedge's 0.36 — it's more
+than double it, and ~6x the original 0.14. Per-fold R2 for Extra Trees
+ranged 0.60-0.99 across the 5 space-only test folds (16 of ACE's 80 space
+companies per fold) — positive and strong in every fold, not one lucky
+partition. This directly confirms the pooled hedge's diagnosis: ACE's
+weakness was too few companies (80) per training fold, letting a handful
+of structurally atypical companies (BT, Babcock, Costain, Intelsat,
+Avanti) dominate; adding 15,845 adjacent-company training rows (at a 0.2
+weight) gives tree ensembles enough data to learn the real relationship,
+as a genuinely mission-specific model (not the pooled hedge's
+architectural cost of ACE depending on Beyond Earth/Resilient Earth's own
+labelled data).
+
+Beyond Earth also improved materially (Extra Trees 0.79 vs. the original
+Lasso's 0.63). Resilient Earth stayed flat (best now 0.67 vs. the
+original CatBoost's 0.65) — consistent with the pooled-hedge finding that
+Resilient Earth already had enough space companies per fold for extra
+data to not move the needle.
+
+**Caveat, stated plainly**: this is a single 5-fold pass, not the
+methodology's standard 5-repeat (25-fold) config used everywhere else in
+this project — a disclosed compute tradeoff (the 43-minute ACE probe,
+scaled to 3 missions x 10 models x 5 repeats, would have run many hours
+to over a day). R2_std (0.12-0.31 for the leading models) shows real but
+not alarming fold-to-fold variance. **The deployed model has NOT been
+switched** — this is a finding pending a confirmatory run at full
+5-repeat rigor for the specific mission/model combinations that matter
+(Extra Trees, ACE and Beyond Earth), not yet a production decision.
