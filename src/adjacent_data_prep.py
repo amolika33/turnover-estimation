@@ -52,7 +52,12 @@ import numpy as np
 import pandas as pd
 
 from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, make_company_id
-from src.feature_engineering import FEATURE_COLUMNS, build_source1_ratio_features, build_source3_features
+from src.feature_engineering import (
+    FEATURE_COLUMNS,
+    build_source1_ratio_features,
+    build_source3_features,
+    is_public_sector_body,
+)
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS
 from src.sample_construction import ID_COLS, POPULATION_TYPE_ADJACENT, check_turnover
 from forecast_src.forecast_data_prep import annualize_turnover
@@ -349,6 +354,7 @@ def build_mission_training_features(
     panel["value_stream"] = np.nan
     panel["employee_count_source"] = pd.NA
     panel.loc[panel["total_employees"].notna(), "employee_count_source"] = "filed"
+    panel["is_public_sector_body"] = is_public_sector_body(panel[NAME_COL])
 
     with np.errstate(divide="ignore", invalid="ignore"):
         panel["assets_per_employee"] = panel["balance_sheet_total_assets"] / panel["total_employees"]

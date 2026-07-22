@@ -131,6 +131,11 @@ PLAIN_NUMERIC_FEATURES = [
     "signal_patent",
     "has_attended_accelerator",
     "is_academic_spinout",
+    # Government/public-research-body flag (feature_engineering.
+    # is_public_sector_body) — added after the Resilient Earth Geospatial
+    # Intelligence diagnostic found a consistent, learnable ~20%
+    # under-prediction bias for these companies (PROJECT_NOTES.md).
+    "is_public_sector_body",
     # Source 1 (Financial Statement 1) balance-sheet ratios — see
     # feature_engineering.py's SOURCE1_SAFE_RATIO_COLUMNS for the
     # formula-reconstruction leakage check. NOT log-transformed: unlike

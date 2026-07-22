@@ -20,6 +20,7 @@ rather than population_type only ever acting through `sample_weight`
 down-rank adjacent rows' influence on the fit; it can't let the model
 represent "adjacent companies of this profile tend to report turnover
 differently than space companies of this profile," which a feature can."""
+import re
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,77 @@ STATIC_COLS = {
     "SIC Code 1": "sic_code_1",
     "Value Stream": "value_stream",
 }
+
+# is_public_sector_body: found during the Resilient Earth Geospatial
+# Intelligence diagnostic (PROJECT_NOTES.md) — 4 companies (Ordnance
+# Survey, UK Hydrographic Office, National Physical Laboratory, Plymouth
+# Marine Laboratory) showed a consistent, learnable ~20% under-prediction
+# bias with otherwise-good R2 (0.65), the signature of a missing
+# categorical distinction rather than genuine unpredictability: these are
+# publicly-funded bodies whose turnover reflects government funding/
+# statutory fees, not the employee/asset-driven revenue relationship the
+# rest of the feature set assumes. Checking all 3 real missions' space
+# companies (not just Resilient Earth) surfaced a 5th: National Nuclear
+# Laboratory (Beyond Earth).
+#
+# DELIBERATE CHOICE, verified against real data: a curated exact-name
+# list, not a generic keyword pattern. An initial pass using broad terms
+# ("Agency", "Office", "Council") matched 47 Resilient Earth adjacent-file
+# companies, nearly all false positives — Lloyd's insurance "Managing
+# Agency"/"Underwriting Agency" firms, "The Stationery Office Limited",
+# "National House-Building Council" (industry-funded, not government),
+# "World Energy Council" (industry body, not government) among them.
+# Tightened to explicit proper names plus 2 narrowly-scoped patterns
+# (X County/City/Borough/District Council; "HM <name>"/"NHS") that only
+# match structurally unambiguous UK public-body naming conventions —
+# re-verified against the same adjacent files: 2/2/4 matches across
+# ACE/Beyond Earth/Resilient Earth, all genuine (Kent County Council, UK
+# Centre for Ecology and Hydrology, the 5 known bodies above).
+#
+# Known limitation, stated plainly: this is a best-effort, precision-over-
+# recall heuristic — it will miss public bodies not on this list or not
+# matching these 2 patterns, rather than risk mislabelling a private
+# company. Worth revisiting if the adjacent-company population turns out
+# to have many more public bodies this list doesn't catch.
+PUBLIC_SECTOR_BODY_EXACT_NAMES = [
+    "Ordnance Survey",
+    "UK Hydrographic Office",
+    "National Physical Laboratory",
+    "Plymouth Marine Laboratory",
+    "National Nuclear Laboratory",
+    "United Kingdom National Nuclear Laboratory",
+    "Met Office",
+    "British Geological Survey",
+    "Environment Agency",
+    "Natural England",
+    "Historic England",
+    "Forestry Commission",
+    "Civil Aviation Authority",
+    "Maritime and Coastguard Agency",
+    "Health and Safety Executive",
+    "UK Health Security Agency",
+    "Public Health England",
+    "Food Standards Agency",
+    "Highways England",
+    "National Highways",
+    "Royal Botanic Gardens",
+    "Centre for Ecology",
+    "UK Research and Innovation",
+    "Natural Environment Research Council",
+    "Science and Technology Facilities Council",
+    "Engineering and Physical Sciences Research Council",
+]
+PUBLIC_SECTOR_BODY_PATTERN = re.compile(
+    "(?:" + "|".join(re.escape(n) for n in PUBLIC_SECTOR_BODY_EXACT_NAMES) + ")"
+    r"|\b\w+ (?:County|City|Borough|District) Council\b"
+    r"|^HM \w+"
+    r"|\bNHS\b",
+    re.IGNORECASE,
+)
+
+
+def is_public_sector_body(name: pd.Series) -> pd.Series:
+    return name.astype(str).str.contains(PUBLIC_SECTOR_BODY_PATTERN, na=False).astype(int)
 
 # Merge key: company_id (see data_prep.make_company_id), not the old
 # name+URL+CH composite — a single guaranteed-non-null column, robust to
@@ -186,6 +258,7 @@ FEATURE_COLUMNS = [
     "company_size",
     "sic_code_1",
     "value_stream",
+    "is_public_sector_body",
 ] + list(SOURCE3_SAFE_BOOLEAN_SIGNALS.values()) + [
     "has_attended_accelerator",
     "accelerator_count",
@@ -434,6 +507,7 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
 
     df = merge_source3_features(df, segmented_df)
     df = merge_source1_ratio_features(df, segmented_df)
+    df["is_public_sector_body"] = is_public_sector_body(df[NAME_COL])
 
     return df, age_log
 
