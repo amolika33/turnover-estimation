@@ -66,9 +66,9 @@ from sklearn.utils.validation import has_fit_parameter
 
 from src.adjacent_data_prep import build_all_adjacent_training_features
 from src.data_prep import COMPANY_ID_COL, prepare_source2
-from src.feature_engineering import build_features
+from src.feature_engineering import add_features, build_features
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
-from src.sample_construction import POPULATION_TYPE_SPACE
+from src.sample_construction import POPULATION_TYPE_SPACE, build_long_panel, split_labelled_inference
 
 try:
     from catboost import CatBoostRegressor
@@ -567,6 +567,50 @@ def get_mission_features_with_adjacent(
     adjacent_df = adjacent_features_all[adjacent_features_all[MISSION_COL] == mission].copy()
     adjacent_df[WEIGHT_COL] = adjacent_df[WEIGHT_COL] * adjacent_sample_weight
     return pd.concat([space_df, adjacent_df], ignore_index=True, sort=False)
+
+
+def get_cross_cutting_features() -> pd.DataFrame:
+    """Cross-cutting's own 107 labelled companies, built the same way any
+    real mission's space-company population is (build_long_panel +
+    add_features) — but Cross-cutting isn't one of REAL_MISSIONS, so it
+    never appears in get_mission_features (which is built from
+    feature_engineering.build_features -> sample_construction.
+    construct_samples, itself REAL_MISSIONS-only). This is the same panel
+    the original standalone cross-cutting bake-off used (see
+    task2_cross_cutting_bakeoff.py in the earlier diagnostic pass).
+
+    build_long_panel tags every row population_type="space" regardless of
+    which real-world mission it's for — a generic "this is the primary,
+    held-out-eligible population" marker rather than a literal claim about
+    the space sector — so make_space_only_outer_splits works unchanged for
+    Cross-cutting's own companies too."""
+    prepped, _ = prepare_source2()
+    mapping = load_mapping()
+    segmented, _ = segment_missions(prepped, mapping)
+    cc_df = segmented[(segmented[MISSION_COL] == "Cross-cutting") & ~segmented["is_true_duplicate"]].copy()
+    labelled_cc, _ = split_labelled_inference(cc_df)
+    panel, _ = build_long_panel(labelled_cc)
+    features, _ = add_features(panel, segmented)
+    return features
+
+
+def get_cross_cutting_features_with_adjacent(
+    adjacent_features_all: pd.DataFrame | None = None,
+    adjacent_sample_weight: float = ADJACENT_SAMPLE_WEIGHT,
+) -> pd.DataFrame:
+    """Cross-cutting analogue of get_mission_features_with_adjacent: the 107
+    real cross-cutting companies as the primary population, the new
+    Cross-cutting adjacent batch (~601 companies after excluding the 6 that
+    are already labelled space companies) as "adjacent" at a to-be-tuned
+    weight. Same never-validate-on-adjacent-rows principle as the 3 real
+    missions, via make_space_only_outer_splits/run_bakeoff's existing
+    population_type auto-detection — no new CV code needed."""
+    primary_df = get_cross_cutting_features()
+    if adjacent_features_all is None:
+        adjacent_features_all = build_all_adjacent_training_features()
+    adjacent_df = adjacent_features_all[adjacent_features_all[MISSION_COL] == "Cross-cutting"].copy()
+    adjacent_df[WEIGHT_COL] = adjacent_df[WEIGHT_COL] * adjacent_sample_weight
+    return pd.concat([primary_df, adjacent_df], ignore_index=True, sort=False)
 
 
 def main() -> None:
