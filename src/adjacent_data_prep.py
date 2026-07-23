@@ -56,6 +56,7 @@ from src.feature_engineering import (
     FEATURE_COLUMNS,
     build_source1_ratio_features,
     build_source3_features,
+    is_international_research_body,
     is_public_sector_body,
 )
 from src.mission_segmentation import MISSION_COL, REAL_MISSIONS
@@ -355,6 +356,7 @@ def build_mission_training_features(
     panel["employee_count_source"] = pd.NA
     panel.loc[panel["total_employees"].notna(), "employee_count_source"] = "filed"
     panel["is_public_sector_body"] = is_public_sector_body(panel[NAME_COL])
+    panel["is_international_research_body"] = is_international_research_body(panel[NAME_COL])
 
     with np.errstate(divide="ignore", invalid="ignore"):
         panel["assets_per_employee"] = panel["balance_sheet_total_assets"] / panel["total_employees"]

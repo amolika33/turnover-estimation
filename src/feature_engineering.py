@@ -112,6 +112,51 @@ PUBLIC_SECTOR_BODY_PATTERN = re.compile(
 def is_public_sector_body(name: pd.Series) -> pd.Series:
     return name.astype(str).str.contains(PUBLIC_SECTOR_BODY_PATTERN, na=False).astype(int)
 
+
+# is_international_research_body: found during the Beyond Earth
+# worst-predicted-company diagnostic (PROJECT_NOTES.md) — SKAO (Square
+# Kilometre Array Observatory) showed the same signature as the UK
+# public-sector bodies above (turnover collapsing to near-zero, £3,710-
+# £11,175, while retaining substantial assets, £7.5-8.8M) but for a
+# different reason: it's a big-science INTERGOVERNMENTAL organization
+# funded via international treaty contributions, not UK government
+# funding — a related but distinct category, kept as its own flag rather
+# than folded into is_public_sector_body.
+#
+# Checked against real data before building this (not assumed): searched
+# all 367 space companies and all 3 adjacent-company files (12,127 rows)
+# for international-research-body name patterns (Square Kilometre Array,
+# ESA, CERN, European Southern Observatory, ITER, "Observatory",
+# "Intergovernmental") — SKAO is currently the ONLY confirmed match
+# anywhere in the dataset. This flag is built anyway (low current yield,
+# but cheap and correctly scoped) since the pattern is well-evidenced for
+# the one case that exists, and more may appear in a future, larger
+# adjacent-company pull. Curated exact-name list, same precision-over-
+# recall approach as PUBLIC_SECTOR_BODY_EXACT_NAMES — no generic keyword
+# matching ("Observatory"/"Institute"/"Centre" alone are far too common
+# in private company names to use safely, same lesson as "Agency"/
+# "Office"/"Council" being rejected for the domestic list).
+INTERNATIONAL_RESEARCH_BODY_EXACT_NAMES = [
+    "SKAO",
+    "Square Kilometre Array",
+    "European Space Agency",
+    "European Southern Observatory",
+    "European Organization for Nuclear Research",
+    "European Organisation for Nuclear Research",
+    "CERN",
+    "Joint European Torus",
+    "ITER Organization",
+    "European Molecular Biology Laboratory",
+]
+INTERNATIONAL_RESEARCH_BODY_PATTERN = re.compile(
+    "(?:" + "|".join(re.escape(n) for n in INTERNATIONAL_RESEARCH_BODY_EXACT_NAMES) + ")",
+    re.IGNORECASE,
+)
+
+
+def is_international_research_body(name: pd.Series) -> pd.Series:
+    return name.astype(str).str.contains(INTERNATIONAL_RESEARCH_BODY_PATTERN, na=False).astype(int)
+
 # Merge key: company_id (see data_prep.make_company_id), not the old
 # name+URL+CH composite — a single guaranteed-non-null column, robust to
 # GeoData-Institute-style nulled CH numbers and shared-CH-number anomalies.
@@ -259,6 +304,7 @@ FEATURE_COLUMNS = [
     "sic_code_1",
     "value_stream",
     "is_public_sector_body",
+    "is_international_research_body",
 ] + list(SOURCE3_SAFE_BOOLEAN_SIGNALS.values()) + [
     "has_attended_accelerator",
     "accelerator_count",
@@ -508,6 +554,7 @@ def add_features(panel: pd.DataFrame, segmented_df: pd.DataFrame) -> tuple[pd.Da
     df = merge_source3_features(df, segmented_df)
     df = merge_source1_ratio_features(df, segmented_df)
     df["is_public_sector_body"] = is_public_sector_body(df[NAME_COL])
+    df["is_international_research_body"] = is_international_research_body(df[NAME_COL])
 
     return df, age_log
 

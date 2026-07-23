@@ -22,6 +22,7 @@ from src.feature_engineering import (
     MERGE_KEY,
     STATIC_COLS,
     _melt_year_indexed,
+    is_international_research_body,
     is_public_sector_body,
     merge_source1_ratio_features,
     merge_source3_features,
@@ -124,6 +125,7 @@ def add_prediction_features(snapshot: pd.DataFrame, segmented_df: pd.DataFrame) 
     df = merge_source3_features(df, segmented_df)
     df = merge_source1_ratio_features(df, segmented_df)
     df["is_public_sector_body"] = is_public_sector_body(df[NAME_COL])
+    df["is_international_research_body"] = is_international_research_body(df[NAME_COL])
 
     return df
 

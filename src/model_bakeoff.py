@@ -136,6 +136,12 @@ PLAIN_NUMERIC_FEATURES = [
     # Intelligence diagnostic found a consistent, learnable ~20%
     # under-prediction bias for these companies (PROJECT_NOTES.md).
     "is_public_sector_body",
+    # International/intergovernmental research body flag (feature_
+    # engineering.is_international_research_body) — same signature as
+    # is_public_sector_body (turnover near-zero despite retained assets)
+    # but for treaty-funded science bodies like SKAO, not UK government
+    # agencies; found during the Beyond Earth worst-predicted diagnostic.
+    "is_international_research_body",
     # Source 1 (Financial Statement 1) balance-sheet ratios — see
     # feature_engineering.py's SOURCE1_SAFE_RATIO_COLUMNS for the
     # formula-reconstruction leakage check. NOT log-transformed: unlike
