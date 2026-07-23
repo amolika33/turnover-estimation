@@ -34,10 +34,12 @@ from src.model_bakeoff import (
     NUMERIC_FEATURES,
     cast_categoricals,
     check_negative_log_inputs,
+    get_cross_cutting_features,
     get_mission_features,
 )
+from src.model_selection import CROSS_CUTTING_MISSION, CROSS_CUTTING_ROUTING, CROSS_CUTTING_ROUTING_FIELD
 from src.data_prep import COMPANY_ID_COL, NAME_COL, prepare_source2
-from src.sample_construction import YEARS, construct_samples
+from src.sample_construction import YEARS, construct_samples, split_labelled_inference
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
@@ -221,6 +223,66 @@ def predict_mission(mission: str, segmented: pd.DataFrame) -> tuple[pd.DataFrame
     return features, negative_log_inputs
 
 
+def predict_cross_cutting(segmented: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Cross-cutting analogue of predict_mission. Cross-cutting never went
+    through the REAL_MISSIONS-only construct_samples/predict_mission path
+    (mission_segmentation.py deliberately excludes it — training_eligible
+    is always False for Cross-cutting rows), so its inference population is
+    built directly here the same way get_cross_cutting_features builds its
+    labelled side, mirrored for the has-no-observed-turnover half via
+    split_labelled_inference.
+
+    Routes each inference company to one of Cross-cutting's 2 locked
+    sub-models by its `value_stream` (see model_selection.py's
+    CROSS_CUTTING_ROUTING, the LOCKED decision from the sub-segmentation
+    investigation): Consultancy/Other companies get their own dedicated
+    model; Explore New Markets companies — and any future company whose
+    value_stream isn't one of these 2 currently-known categories — fall
+    back to the whole-population blended model, since only Consultancy/
+    Other's isolation was confirmed to help (see PROJECT_NOTES.md
+    "Extended validation round" section 6)."""
+    cc_df = segmented[(segmented[MISSION_COL] == CROSS_CUTTING_MISSION) & ~segmented["is_true_duplicate"]].copy()
+    _, inference_cc = split_labelled_inference(cc_df)
+
+    snapshot = build_covariate_snapshot(inference_cc)
+    features = add_prediction_features(snapshot, segmented)
+    features = cast_categoricals(features)
+
+    blended_training_df = cast_categoricals(get_cross_cutting_features())
+    co_training_df = blended_training_df[blended_training_df[CROSS_CUTTING_ROUTING_FIELD] == "Consultancy / Other"]
+
+    sub_segment = features[CROSS_CUTTING_ROUTING_FIELD].map(CROSS_CUTTING_ROUTING).fillna("blended")
+
+    negative_log_inputs_parts = []
+    predicted_parts = []
+    for seg, seg_features in features.groupby(sub_segment):
+        training_df = co_training_df if seg == "consultancy_other" else blended_training_df
+        seg_features = compute_reliability(seg_features, training_df)
+
+        negative_log_inputs_parts.append(
+            check_negative_log_inputs(seg_features, LOG_NUMERIC_FEATURES, id_col=COMPANY_ID_COL)
+        )
+
+        model_path = OUTPUT_DIR / f"final_model_cross_cutting_{seg}.joblib"
+        model = joblib.load(model_path)
+        X = seg_features[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
+        seg_features["predicted_total_turnover"] = model.predict(X) if len(X) else []
+        seg_features["sub_segment"] = seg
+        predicted_parts.append(seg_features)
+
+    all_predicted = pd.concat(predicted_parts, ignore_index=True) if predicted_parts else features.assign(
+        predicted_total_turnover=pd.Series(dtype=float), sub_segment=pd.Series(dtype=str)
+    )
+    all_predicted["turnover_source"] = "predicted"
+    all_predicted["prediction_year"] = all_predicted["year"]
+    all_predicted = validate_predictions(all_predicted)
+
+    negative_log_inputs = (
+        pd.concat(negative_log_inputs_parts, ignore_index=True) if negative_log_inputs_parts else features.iloc[0:0]
+    )
+    return all_predicted, negative_log_inputs
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     prepped, _ = prepare_source2()
@@ -253,6 +315,36 @@ def main() -> None:
 
         if len(negative_log_inputs):
             log_path = OUTPUT_DIR / f"log1p_negative_values_predict_{slug}.csv"
+            negative_log_inputs.to_csv(log_path, index=False)
+            print(f"WARNING: {len(negative_log_inputs)} negative values in log-transformed features, wrote {log_path}")
+
+    cc_rows = selected_models[selected_models["mission"] == CROSS_CUTTING_MISSION]
+    if cc_rows.empty or not bool(cc_rows["usable"].all()):
+        unusable = cc_rows[~cc_rows["usable"]]
+        reason = (
+            "Cross-cutting not found in selected_models.csv"
+            if cc_rows.empty
+            else "; ".join(f"{r['sub_segment']}: {r['exclusion_reason']}" for _, r in unusable.iterrows())
+        )
+        print(f"\n=== {CROSS_CUTTING_MISSION}: SKIPPED — {reason} ===")
+    else:
+        print(f"\n=== {CROSS_CUTTING_MISSION} (split: Consultancy/Other + blended fallback) ===")
+        preds, negative_log_inputs = predict_cross_cutting(segmented)
+        print(f"Predicted turnover for {len(preds)} inference companies")
+        if len(preds):
+            print("Routed to:", preds["sub_segment"].value_counts().to_dict())
+            print("Reliability breakdown:", preds["reliability"].value_counts().to_dict())
+            n_invalid = int((~preds["prediction_valid"]).sum())
+            if n_invalid:
+                print(f"WARNING: {n_invalid} invalid predictions nulled (see prediction_invalid_reason)")
+
+        out_path = OUTPUT_DIR / "predictions_cross_cutting.csv"
+        preds.to_csv(out_path, index=False)
+        print(f"Wrote {out_path}")
+        all_predictions.append(preds)
+
+        if len(negative_log_inputs):
+            log_path = OUTPUT_DIR / "log1p_negative_values_predict_cross_cutting.csv"
             negative_log_inputs.to_csv(log_path, index=False)
             print(f"WARNING: {len(negative_log_inputs)} negative values in log-transformed features, wrote {log_path}")
 

@@ -68,6 +68,7 @@ from src.model_bakeoff import (
     TARGET_COL,
     WEIGHT_COL,
     cast_categoricals,
+    get_cross_cutting_features,
     get_mission_features,
     get_preprocessor,
 )
@@ -219,8 +220,109 @@ def fit_final_model(mission_df: pd.DataFrame, model_name: str, n_splits: int = 5
     return search.best_estimator_, search.best_params_
 
 
-def load_bakeoff_results(mission: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    slug = mission.lower().replace(" ", "_")
+CROSS_CUTTING_MISSION = "Cross-cutting"
+CROSS_CUTTING_ROUTING_FIELD = "value_stream"
+# LOCKED DECISION (see PROJECT_NOTES.md "Extended validation round" section
+# 6, ASSUMPTIONS_REGISTER.md): Cross-cutting's sub-segmentation
+# investigation found Consultancy/Other (86 companies) supports its own
+# reliable model (confirmed 5-repeat R2=0.778, std=0.095 — a robust,
+# repeat-to-repeat-stable result), while Explore New Markets (21
+# companies) does NOT — its own dedicated model's confirmed R2 collapsed
+# from a single-pass 0.580 to 0.293 (std=0.625) under the full 5-repeat
+# check, the same small-sample-instability signature seen elsewhere in
+# this project (ACE pre-adjacent-data, Resilient Earth's Agriculture
+# sub-model). Explore New Markets stays under the existing whole-
+# population blended model instead of getting its own unreliable one.
+# This mapping is the routing table predict.py reads at inference time —
+# not re-derived by select_model()'s automated ranking, since it reflects
+# an explicit human decision informed by a confirmatory pass, the same
+# way ACE's SVR exclusion or Resilient Earth's Veripos fix are explicit
+# decisions rather than ranking outputs.
+CROSS_CUTTING_ROUTING = {
+    "Consultancy / Other": "consultancy_other",
+    "Explore New Markets": "blended",
+}
+CROSS_CUTTING_LOCKED_SUB_MODEL = "Elastic Net"
+
+
+def select_cross_cutting_models() -> tuple[list[dict], dict]:
+    """Cross-cutting never went through the standard REAL_MISSIONS
+    training-eligible pipeline before this session (mission_segmentation.py
+    deliberately excludes it — see segment_missions' training_eligible
+    rule) — its own standalone bake-off / sub-segmentation investigation
+    happened entirely in this session's ad-hoc scripts, so this function
+    persists that decision the same way select_model()+fit_final_model()
+    do for the 3 real missions, rather than leaving it as an analysis-only
+    finding.
+
+    Two models are fit and saved:
+    1. "blended" — the full 107-company standalone bake-off's own winner
+       (re-derived via the same select_model() ranking used everywhere
+       else, from the already-computed model_bakeoff_cross_cutting_
+       summary/folds.csv — resolves to Extra Trees). Serves Explore New
+       Markets companies at inference time (and is the fallback for any
+       future company whose value_stream isn't one of the 2 currently
+       known ones).
+    2. "consultancy_other" — the LOCKED Elastic Net model (see
+       CROSS_CUTTING_ROUTING_FIELD above), refit directly on just the 86
+       Consultancy/Other companies. Not re-derived via select_model()'s
+       ranking — this is a human decision already validated by a
+       confirmatory 5-repeat pass, not something to re-rank here.
+
+    Returns (selected_models_rows, model_paths) — model_paths keyed by
+    sub_segment ("blended"/"consultancy_other") for main() to persist."""
+    cc_features = get_cross_cutting_features()
+    # The standalone Cross-cutting bake-off (this session's earlier
+    # task2_cross_cutting_bakeoff.py) wrote its files with an underscore
+    # slug ("cross_cutting"), not the generic hyphen-preserving slug
+    # ("cross-cutting") load_bakeoff_results would otherwise compute from
+    # "Cross-cutting" (its .replace(" ", "_") only handles spaces).
+    summary, fold_detail = load_bakeoff_results(CROSS_CUTTING_MISSION, slug="cross_cutting")
+    blended_result = select_model(summary, fold_detail)
+    blended_winner = blended_result["winner"]
+    blended_model, blended_params = fit_final_model(cc_features, blended_winner)
+    blended_r2 = float(blended_result["winner_row"]["R2_mean"])
+
+    co_features = cc_features[cc_features[CROSS_CUTTING_ROUTING_FIELD] == "Consultancy / Other"].copy()
+    co_model, co_params = fit_final_model(co_features, CROSS_CUTTING_LOCKED_SUB_MODEL)
+    # Confirmed 5-repeat result from the sub-segmentation confirmatory pass
+    # (data/processed/model_bakeoff_cc_consultancy_other_confirmatory_folds.csv),
+    # not re-computed here — refitting on the full 86 companies is a
+    # separate step from the R2 estimate, same distinction model_selection
+    # already draws for the 3 real missions (CV estimates performance;
+    # fit_final_model produces the deployed artifact).
+    co_r2 = 0.778
+
+    rows = [
+        {
+            "mission": CROSS_CUTTING_MISSION,
+            "sub_segment": "blended",
+            "routing_field": "",
+            "routing_value": "",
+            "selected_model": blended_winner,
+            "r2_mean": blended_r2,
+            "usable": blended_r2 > USABILITY_R2_THRESHOLD,
+            "exclusion_reason": "",
+            "best_params": json.dumps(blended_params, default=str),
+        },
+        {
+            "mission": CROSS_CUTTING_MISSION,
+            "sub_segment": "consultancy_other",
+            "routing_field": CROSS_CUTTING_ROUTING_FIELD,
+            "routing_value": "Consultancy / Other",
+            "selected_model": CROSS_CUTTING_LOCKED_SUB_MODEL,
+            "r2_mean": co_r2,
+            "usable": co_r2 > USABILITY_R2_THRESHOLD,
+            "exclusion_reason": "",
+            "best_params": json.dumps(co_params, default=str),
+        },
+    ]
+    model_paths = {"blended": blended_model, "consultancy_other": co_model}
+    return rows, model_paths
+
+
+def load_bakeoff_results(mission: str, slug: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    slug = slug or mission.lower().replace(" ", "_")
     summary_path = OUTPUT_DIR / f"model_bakeoff_{slug}_summary.csv"
     folds_path = OUTPUT_DIR / f"model_bakeoff_{slug}_folds.csv"
     if not summary_path.exists() or not folds_path.exists():
@@ -234,8 +336,14 @@ def load_bakeoff_results(mission: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mission", action="append", choices=REAL_MISSIONS, default=None)
+    parser.add_argument(
+        "--only-cross-cutting",
+        action="store_true",
+        help="Skip the 3 real missions entirely (their deployed models are untouched) and refit/persist only "
+        "Cross-cutting's 2 sub-models.",
+    )
     args = parser.parse_args()
-    missions = args.mission or REAL_MISSIONS
+    missions = [] if args.only_cross_cutting else (args.mission or REAL_MISSIONS)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     selection_rows = []
@@ -301,6 +409,9 @@ def main() -> None:
         selected_models_rows.append(
             {
                 "mission": mission,
+                "sub_segment": "",
+                "routing_field": "",
+                "routing_value": "",
                 "selected_model": winner,
                 "r2_mean": r2_mean,
                 "usable": usable,
@@ -314,24 +425,43 @@ def main() -> None:
         ranked_out["selected"] = ranked_out["Model"] == winner
         selection_rows.append(ranked_out)
 
+    print(f"\n=== {CROSS_CUTTING_MISSION} (2 sub-models: blended fallback + locked Consultancy/Other split) ===")
+    cc_rows, cc_model_paths = select_cross_cutting_models()
+    selected_models_rows.extend(cc_rows)
+    for sub_segment, model in cc_model_paths.items():
+        model_path = OUTPUT_DIR / f"final_model_cross_cutting_{sub_segment}.joblib"
+        joblib.dump(model, model_path)
+        print(f"  [{sub_segment}] Wrote {model_path}")
+    for row in cc_rows:
+        print(f"  [{row['sub_segment']}] {row['selected_model']}, r2_mean={row['r2_mean']:.3f}, usable={row['usable']}")
+
     # --mission can target a subset (e.g. re-running just Resilient Earth
     # after a fix); merge with any prior run's rows for the other missions
     # instead of overwriting them, since these two files are the persistent
-    # record other modules (predict.py, assemble.py) depend on.
+    # record other modules (predict.py, assemble.py) depend on. Cross-
+    # cutting's 2 sub-model rows are always refreshed together (identified
+    # by mission=="Cross-cutting", regardless of --mission, since --mission
+    # only ever targets the 3 real missions).
     summary_path = OUTPUT_DIR / "model_selection_summary.csv"
-    new_summary = pd.concat(selection_rows, ignore_index=True)
-    if summary_path.exists():
-        prior_summary = pd.read_csv(summary_path)
-        prior_summary = prior_summary[~prior_summary["Mission"].isin(missions)]
-        new_summary = pd.concat([prior_summary, new_summary], ignore_index=True)
-    new_summary.to_csv(summary_path, index=False)
-    print(f"\nWrote {summary_path}")
+    if selection_rows:
+        new_summary = pd.concat(selection_rows, ignore_index=True)
+        if summary_path.exists():
+            prior_summary = pd.read_csv(summary_path)
+            prior_summary = prior_summary[~prior_summary["Mission"].isin(missions)]
+            new_summary = pd.concat([prior_summary, new_summary], ignore_index=True)
+        new_summary.to_csv(summary_path, index=False)
+        print(f"\nWrote {summary_path}")
+    else:
+        print(f"\n(--only-cross-cutting: {summary_path} left unchanged — Cross-cutting isn't part of the "
+              "composite-rank selection table, it has its own locked routing.)")
 
     selected_path = OUTPUT_DIR / "selected_models.csv"
     new_selected = pd.DataFrame(selected_models_rows)
     if selected_path.exists():
         prior_selected = pd.read_csv(selected_path)
-        prior_selected = prior_selected[~prior_selected["mission"].isin(missions)]
+        prior_selected = prior_selected[
+            ~(prior_selected["mission"].isin(missions) | (prior_selected["mission"] == CROSS_CUTTING_MISSION))
+        ]
         new_selected = pd.concat([prior_selected, new_selected], ignore_index=True)
     new_selected.to_csv(selected_path, index=False)
     print(f"Wrote {selected_path}")

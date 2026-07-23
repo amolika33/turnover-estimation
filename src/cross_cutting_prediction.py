@@ -1,4 +1,15 @@
-"""Prediction-time-only best-guess mission scoring for cross-cutting
+"""SUPERSEDED, no longer called by run_full_pipeline.py or anything else —
+kept only as a record of the original approach. Once Cross-cutting had
+enough of its own labelled companies to support real dedicated models
+(the sub-segmentation investigation, PROJECT_NOTES.md "Extended validation
+round" section 6), src/predict.py's predict_cross_cutting replaced this
+module's approach entirely: scoring cross-cutting companies with their own
+validated models (Consultancy/Other's dedicated model + a whole-population
+blended fallback) instead of borrowing a real mission's model via
+best-guess similarity. Both write the same predictions_cross_cutting.csv
+path — do not run both in the same pipeline invocation.
+
+Prediction-time-only best-guess mission scoring for cross-cutting
 companies with no observed turnover (PROJECT_NOTES.md "Planned: cross-cutting
 predictions" — this is that build). Cross-cutting companies NEVER enter
 training data for any mission model, no exceptions — this module only

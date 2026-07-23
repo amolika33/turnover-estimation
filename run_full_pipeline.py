@@ -40,8 +40,14 @@ STAGES: list[tuple[str, list[str]]] = [
     ("Estimation: feature_engineering", [sys.executable, "-m", "src.feature_engineering"]),
     ("Estimation: model_bakeoff", [sys.executable, "-m", "src.model_bakeoff"]),
     ("Estimation: model_selection", [sys.executable, "-m", "src.model_selection"]),
+    # cross_cutting_prediction (the old buzzword/SIC-code best-guess mission
+    # assignment) is superseded — src.predict's own main() now scores
+    # Cross-cutting directly with its 2 locked sub-models (Consultancy/Other
+    # + whole-population blended fallback, see model_selection.py's
+    # CROSS_CUTTING_ROUTING) and writes predictions_cross_cutting.csv
+    # itself. Running the old stage after this one would silently
+    # overwrite that file with the retired approach.
     ("Estimation: predict", [sys.executable, "-m", "src.predict"]),
-    ("Estimation: cross_cutting_prediction", [sys.executable, "-m", "src.cross_cutting_prediction"]),
     ("Estimation: assemble", [sys.executable, "-m", "src.assemble"]),
     ("Estimation: reporting", [sys.executable, "-m", "src.reporting"]),
     # --- 2030 forecasting pipeline (forecast_src/) ---
