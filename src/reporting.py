@@ -40,10 +40,13 @@ from src.model_bakeoff import (
     TARGET_COL,
     WEIGHT_COL,
     cast_categoricals,
+    get_cross_cutting_features,
     get_mission_features,
+    get_mission_features_with_adjacent,
     get_preprocessor,
     make_repeated_group_kfold_splits,
 )
+from src.model_selection import CROSS_CUTTING_ROUTING_FIELD, LOCKED_ADJACENT_MODELS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
@@ -122,27 +125,74 @@ def extract_feature_weights(mission: str) -> tuple[pd.DataFrame, str | None]:
     )
 
 
+def _bakeoff_metrics_and_population(mission: str, sub_segment: str, selected_model: str) -> tuple[dict, pd.DataFrame]:
+    """Returns (metrics dict with MAE/RMSE/R2 mean+std, the population
+    dataframe the model was actually trained/evaluated on) for one
+    selected_models.csv row. 3 special cases, all locked decisions made
+    outside the standard model_bakeoff.py -> model_selection.py path (see
+    PROJECT_NOTES.md "Extended validation round"):
+
+    - ACE/Beyond Earth (LOCKED_ADJACENT_MODELS): the confirmed metrics are
+      a full 5-repeat pass on Extra Trees ONLY (model_bakeoff_adjacent_
+      confirmatory_{slug}_extra_trees_summary.csv), not the plain
+      model_bakeoff_{slug}_summary.csv (that file is the ORIGINAL
+      space-only 9-model comparison — reading it here would silently
+      report the wrong model's performance under the right model's name).
+    - Cross-cutting "blended": the whole-population standalone bake-off
+      (model_bakeoff_cross_cutting_summary.csv — note the underscore
+      slug, not the hyphenated one mission.lower().replace(" ","_")
+      would produce from "Cross-cutting").
+    - Cross-cutting "consultancy_other": its own confirmatory pass folds
+      (no separate _summary.csv was ever written for this one — computed
+      here directly from the folds file)."""
+    if mission in LOCKED_ADJACENT_MODELS:
+        slug = mission.lower().replace(" ", "_")
+        summary = pd.read_csv(OUTPUT_DIR / f"model_bakeoff_adjacent_confirmatory_{slug}_extra_trees_summary.csv")
+        metrics = summary[summary["Model"] == selected_model].iloc[0].to_dict()
+        weight = LOCKED_ADJACENT_MODELS[mission]["adjacent_weight"]
+        population = get_mission_features_with_adjacent(mission, adjacent_sample_weight=weight)
+    elif mission == "Cross-cutting" and sub_segment == "consultancy_other":
+        folds = pd.read_csv(OUTPUT_DIR / "model_bakeoff_cc_consultancy_other_confirmatory_folds.csv")
+        agg = folds[["MAE", "RMSE", "R2"]].agg(["mean", "std"])
+        metrics = {
+            "MAE_mean": agg.loc["mean", "MAE"], "MAE_std": agg.loc["std", "MAE"],
+            "RMSE_mean": agg.loc["mean", "RMSE"], "RMSE_std": agg.loc["std", "RMSE"],
+            "R2_mean": agg.loc["mean", "R2"], "R2_std": agg.loc["std", "R2"],
+        }
+        cc = get_cross_cutting_features()
+        population = cc[cc[CROSS_CUTTING_ROUTING_FIELD] == "Consultancy / Other"]
+    elif mission == "Cross-cutting" and sub_segment == "blended":
+        summary = pd.read_csv(OUTPUT_DIR / "model_bakeoff_cross_cutting_summary.csv")
+        metrics = summary[summary["Model"] == selected_model].iloc[0].to_dict()
+        population = get_cross_cutting_features()
+    else:
+        slug = mission.lower().replace(" ", "_")
+        summary = pd.read_csv(OUTPUT_DIR / f"model_bakeoff_{slug}_summary.csv")
+        metrics = summary[summary["Model"] == selected_model].iloc[0].to_dict()
+        population = get_mission_features(mission)
+    return metrics, population
+
+
 def performance_summary() -> pd.DataFrame:
     selected = pd.read_csv(OUTPUT_DIR / "selected_models.csv")
     rows = []
     for _, row in selected.iterrows():
         mission = row["mission"]
-        slug = mission.lower().replace(" ", "_")
-        bakeoff_summary = pd.read_csv(OUTPUT_DIR / f"model_bakeoff_{slug}_summary.csv")
-        model_row = bakeoff_summary[bakeoff_summary["Model"] == row["selected_model"]].iloc[0]
-        mission_df = get_mission_features(mission)
+        sub_segment = row.get("sub_segment", "") or ""
+        metrics, population = _bakeoff_metrics_and_population(mission, sub_segment, row["selected_model"])
         rows.append(
             {
                 "Mission": mission,
+                "sub_segment": sub_segment,
                 "selected_model": row["selected_model"],
-                "MAE_mean": model_row["MAE_mean"],
-                "MAE_std": model_row["MAE_std"],
-                "RMSE_mean": model_row["RMSE_mean"],
-                "RMSE_std": model_row["RMSE_std"],
-                "R2_mean": model_row["R2_mean"],
-                "R2_std": model_row["R2_std"],
-                "n_companies": mission_df[GROUP_COL].nunique(),
-                "n_panel_rows": len(mission_df),
+                "MAE_mean": metrics["MAE_mean"],
+                "MAE_std": metrics["MAE_std"],
+                "RMSE_mean": metrics["RMSE_mean"],
+                "RMSE_std": metrics["RMSE_std"],
+                "R2_mean": metrics["R2_mean"],
+                "R2_std": metrics["R2_std"],
+                "n_companies": population[GROUP_COL].nunique(),
+                "n_panel_rows": len(population),
                 "usable": row["usable"],
                 "exclusion_reason": row["exclusion_reason"],
             }
@@ -150,12 +200,48 @@ def performance_summary() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def generate_in_sample_predictions(mission: str) -> pd.DataFrame:
+    """ACE/Beyond Earth-only alternative to generate_oof_predictions: their
+    confirmed performance (R2=0.72/0.69) already came from a genuine
+    5-repeat/25-fold CV pass (model_bakeoff's adjacent-integrated
+    confirmatory run — see PROJECT_NOTES.md), but that pass only kept
+    fold-level aggregate metrics, not per-row predictions, and re-running
+    it here just to get a per-row actual-vs-predicted export would cost
+    the same multi-hour runtime as the original confirmatory pass (tens
+    of thousands of adjacent-augmented rows, full grid search per fold) —
+    not justified for what this module's own docstring calls a "proof of
+    concept" diagnostic export. Uses the ALREADY-FITTED deployed model
+    directly instead (fast — one predict() call) — genuinely in-sample,
+    not held-out, and every row/column here says so explicitly rather
+    than presenting it as OOF."""
+    weight = LOCKED_ADJACENT_MODELS[mission]["adjacent_weight"]
+    mission_df = get_mission_features_with_adjacent(mission, adjacent_sample_weight=weight)
+    df = cast_categoricals(mission_df)
+    X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
+
+    slug = mission.lower().replace(" ", "_")
+    model = joblib.load(OUTPUT_DIR / f"final_model_{slug}.joblib")
+    y_pred = model.predict(X)
+
+    result = df[[GROUP_COL, NAME_COL, MISSION_COL, "year"]].copy()
+    result["actual_total_turnover"] = df[TARGET_COL]
+    result["predicted_total_turnover_oof"] = y_pred
+    result["n_test_folds"] = 0
+    result["is_in_sample_not_oof"] = True
+    return result
+
+
 def generate_oof_predictions(mission: str) -> pd.DataFrame:
     """Repeated grouped CV (same 5-fold x 5-repeat scheme as model_bakeoff.py)
     for the mission's selected model only, capturing each row's prediction
     whenever it landed in a test fold. A row is held out exactly once per
     repeat (5 times total); its OOF prediction is the mean of those 5 —
-    genuine held-out performance, never a training-fit (in-sample) value."""
+    genuine held-out performance, never a training-fit (in-sample) value.
+
+    NOT used for ACE/Beyond Earth (their selected model requires adjacent
+    data — see generate_in_sample_predictions instead); this function
+    still works as-is for any mission using only its own space-company
+    population (Resilient Earth)."""
     selected = pd.read_csv(OUTPUT_DIR / "selected_models.csv")
     model_name = selected.loc[selected["mission"] == mission, "selected_model"].iloc[0]
     estimator, param_grid = MODELS[model_name]
@@ -251,8 +337,13 @@ def main() -> None:
 
     for mission in REAL_MISSIONS:
         slug = mission.lower().replace(" ", "_")
-        print(f"=== {mission}: out-of-fold actual vs predicted ===")
-        avp = generate_oof_predictions(mission)
+        if mission in LOCKED_ADJACENT_MODELS:
+            print(f"=== {mission}: actual vs predicted (IN-SAMPLE — see generate_in_sample_predictions "
+                  "docstring for why genuine OOF isn't re-derived here) ===")
+            avp = generate_in_sample_predictions(mission)
+        else:
+            print(f"=== {mission}: out-of-fold actual vs predicted ===")
+            avp = generate_oof_predictions(mission)
         avp_path = OUTPUT_DIR / f"actual_vs_predicted_{slug}.csv"
         avp.to_csv(avp_path, index=False)
         print(f"Wrote {avp_path} ({len(avp)} rows)")
@@ -260,9 +351,10 @@ def main() -> None:
         residuals = build_residuals(avp)
         resid_path = OUTPUT_DIR / f"residuals_{slug}.csv"
         residuals.to_csv(resid_path, index=False)
-        oof_mae = mean_absolute_error(residuals["actual_total_turnover"], residuals["predicted_total_turnover_oof"])
-        oof_r2 = r2_score(residuals["actual_total_turnover"], residuals["predicted_total_turnover_oof"])
-        print(f"OOF MAE (single run, informal check against bake-off mean): {oof_mae:,.0f}, R2: {oof_r2:.2f}")
+        fit_mae = mean_absolute_error(residuals["actual_total_turnover"], residuals["predicted_total_turnover_oof"])
+        fit_r2 = r2_score(residuals["actual_total_turnover"], residuals["predicted_total_turnover_oof"])
+        label = "in-sample fit" if mission in LOCKED_ADJACENT_MODELS else "OOF (single run, informal check against bake-off mean)"
+        print(f"{label} MAE: {fit_mae:,.0f}, R2: {fit_r2:.2f}")
         print(f"Wrote {resid_path}\n")
 
 
