@@ -1438,3 +1438,204 @@ artifact of a loose substring search in the investigation itself
 a real pipeline issue. `company_id="ch_01134945_intel"` is a single,
 internally consistent 11-row record. No fix needed; noted here so the
 retraction is as visible as the original claim was.
+
+## Extended validation round: targeted sourcing, temporal backtest, sub-segmentation
+
+This is the retrospective validation chapter for the adjacent-data work —
+what was tried after the original large adjacent-data pull and the
+worst-predicted-company diagnostics, whether it held up, and what's still
+open. Written as one place to quote from directly for a future
+methodology write-up, rather than left scattered across commit messages.
+
+### 1. The targeted sourcing experiment
+
+**Why it was tried.** Three diagnostics from the worst-predicted-company
+investigations each pointed at a specific, describable gap the original
+large adjacent-data pull hadn't filled:
+
+- **ACE**: worst-predicted companies clustered around a pre-commercial
+  deep-tech pattern (high R&D intensity, low/no turnover yet, substantial
+  headcount or assets) — a segment ACE's existing adjacent pool under-
+  represented.
+- **Resilient Earth**: the Geospatial Intelligence and Earth Observation
+  sub-categories both independently showed the same hardware/photonics-
+  manufacturer mispricing pattern (Leica Geosystems, Furuno UK, Mapping
+  Solutions, Veripos, Hamamatsu Photonics, Raptor Photonics all
+  systematically mispriced) — a specific, sourceable company type.
+- **Cross-cutting**: the standalone-only bake-off (its 107 real companies,
+  no adjacent data) showed small-sample instability (R2 std as high as
+  0.56 for some models) — the same symptom ACE originally had before
+  adjacent data fixed it, suggesting more volume might help the same way.
+
+**What was sourced** (external to this session — sourced via Beauhurst and
+uploaded to `data/raw/` on `main`; the exact query terms/filters used
+aren't available here, only the target pattern each batch was meant to
+match and what Stage A validation confirmed once the files arrived):
+
+| Batch | Target pattern | Companies |
+|---|---|---|
+| ACE deep-tech | pre-commercial deep-tech companies | 566 |
+| Resilient Earth hardware/photonics | hardware/photonics manufacturers | 624 |
+| Cross-cutting volume | general volume increase | 607 |
+
+**The honest outcome, using CONFIRMED (5-repeat) results only — not the
+single-pass numbers that looked promising at first**:
+
+- **ACE: flat.** 0.83 -> 0.82 (single-pass; no 5-repeat confirmatory run
+  was needed to see this — the single-pass gap is within noise, well
+  inside the +-0.15 std already measured). The deep-tech batch added no
+  measurable signal.
+- **Resilient Earth: flat, and the targeted problem got worse in one
+  place.** 0.67 -> 0.66 (single-pass). The hardware-manufacturer bias this
+  batch specifically targeted **did not improve** — Leica Geosystems,
+  Mapping Solutions, Hamamatsu Photonics and Raptor Photonics all still
+  show the same 40-97% under-prediction across their full history.
+  Veripos additionally developed a **new** over-prediction problem
+  (+90% to +450%) that wasn't present before.
+- **Cross-cutting: looked positive, then reversed under confirmation —
+  the headline finding of this whole section.** The single 5-fold quick
+  check showed R2 0.59 -> 0.65 and std 0.30 -> 0.25-0.27 at weight 0.5 — a
+  believable, real-looking improvement in both mean and the exact
+  variance problem being tested. The full 5-repeat confirmatory pass told
+  a different story: **R2 0.556, std 0.271** — BELOW the 0.59 baseline,
+  not above it. Per-repeat R2 (0.652, 0.561, 0.602, 0.478, 0.486) shows
+  the single-pass result was repeat 0 specifically — one favourable
+  partition, not a real effect. **This is the methodological lesson**:
+  single-pass results are not reliable enough to act on even when they
+  look like a clear win in both the metric asked for AND the specific
+  thing (variance) the check was designed to test. The confirmatory pass
+  caught a false positive before it was locked in as a production
+  decision.
+
+### 2. The diminishing-returns finding
+
+All three targeted batches — not just Resilient Earth's — failed to
+produce a confirmed improvement. This is a real, useful negative result:
+it suggests the original large adjacent-data pull (the 3 SatApps files,
+thousands of rows per mission) already captured most of the available
+cross-domain signal, and that smaller, more targeted batches (hundreds of
+companies, chosen for a specific pattern) don't carry enough volume to
+move a tree-ensemble model's learned relationship further. More adjacent
+data is not automatically better adjacent data once the easy gains are
+already banked — a ceiling was reached, not a sourcing failure.
+
+### 3. What "regression" means here (plain-language note)
+
+For a non-technical reader: "regression" in this project means predicting
+a continuous number (a company's turnover in pounds), not any one specific
+algorithm. Two genuinely different families of technique were compared
+throughout, fairly, every time a bake-off ran:
+
+- **Linear-style models** (Linear Regression, Ridge, Lasso, Elastic Net) —
+  fit a straight-line relationship between each feature and turnover
+  (after a log transform to tame the scale). Simple, fast, and were the
+  best available option early on when each mission had too few companies
+  (space-only) for anything more complex to learn reliably.
+- **Tree-based models** (Random Forest, Extra Trees, Gradient Boosting,
+  CatBoost) — build many decision-tree-style splits and combine them.
+  These can learn more complex, non-straight-line relationships, but need
+  more data per split to do it reliably.
+
+Both families were tested every time, on equal footing (same CV, same
+target transform, same evidence-based SVR exclusion — see the bake-off
+methodology above). The pattern that emerged consistently: tree-based
+models only started winning once adjacent data gave each mission enough
+training volume to trust a more complex model (Extra Trees won ACE/Beyond
+Earth's adjacent-augmented bake-offs; CatBoost/Gradient Boosting remained
+best for Resilient Earth, which already had enough space companies per
+fold even before adjacent data). This isn't a case of one technique being
+"better" in the abstract — it's each family needing a different amount of
+data to be trustworthy, and the winner changing as more data became
+available.
+
+### 4. Temporal backtest
+
+**Why, and how it differs from everything else in this project.** Every
+bake-off so far (grouped CV, space-only CV, the confirmatory passes) tests
+generalization ACROSS COMPANIES: train on some companies, predict others,
+all in the same time period. It never asks whether a model trained on
+older data still holds up predicting a KNOWN company's LATER turnover —
+i.e., whether the learned relationship between features and turnover
+drifts over time. This is a different, complementary check.
+
+**Design.** The labelled panel spans 2013-2025. 2024/2025 are thin
+(filing lag: e.g. ACE has only 45/12 space companies with turnover data in
+those years, versus 50-63 in every year 2013-2023) and were excluded from
+both windows. **Train: 2013-2018. Test: 2019-2023.** Checked before
+running: companies with real observed turnover in BOTH windows (a genuine
+future outcome to check predictions against) — ACE 53, Beyond Earth 150,
+Resilient Earth 54, Cross-cutting 83. All four clear a reasonable
+sample-size bar; none is thin enough to distrust on sample size alone.
+
+Design detail stated explicitly: training used ALL available
+training-period rows (2013-2018) for both the primary population and any
+adjacent rows at that mission's tuned weight — not just the
+both-window company subset. The both-window restriction only determines
+which companies get EVALUATED in the test period, since those are the
+ones with a genuine known outcome. This mirrors how the model would
+actually be trained in production (train on everything available up to a
+point in time, evaluate against whoever files new accounts later).
+
+**Models tested** (each mission's currently-locked-in choice): ACE
+(adjacent-augmented Extra Trees, weight 0.2), Beyond Earth
+(adjacent-augmented Extra Trees, weight 1.0), Resilient Earth (original
+CatBoost, no adjacent — the adjacent batch never moved this mission's
+number), Cross-cutting (standalone Extra Trees, no adjacent — per the
+diminishing-returns finding above, its adjacent batch is not going into
+the final model).
+
+**Results** (single train/test split, sample-weighted R2/MAE/RMSE):
+
+| Mission | Model | Both-window companies | Temporal R2 | Grouped-CV R2 (confirmed 5-repeat) |
+|---|---|---|---|---|
+| ACE | Extra Trees (w=0.2) | 53 | 0.991 | 0.72 (0.46) |
+| Beyond Earth | Extra Trees (w=1.0) | 150 | 0.962 | 0.69 (0.35) |
+| Resilient Earth | CatBoost (no adjacent) | 54 | 0.891 | 0.65 (0.16) |
+| Cross-cutting | Extra Trees (no adjacent) | 83 | 0.439 | 0.59 (0.30) |
+
+(The grouped-CV column here is each mission's confirmed 5-repeat number
+for its LOCKED-IN model specifically — ACE/Beyond Earth's confirmatory
+pass result, Resilient Earth's original non-adjacent CatBoost, and
+Cross-cutting's standalone-only bake-off — not the single-pass numbers
+quoted in section 1 above, which were for a different comparison
+(before/after adding each targeted batch).)
+
+**Read these numbers carefully — they need the same scrutiny this
+project has always applied to pooled R2.** A single train/test split's R2
+is a POOLED metric (not fold-averaged across multiple partitions like the
+confirmed grouped-CV numbers), and this project has repeatedly found
+pooled R2 can be dominated by a handful of scale-dominant companies. That
+turned out to matter a lot here, in two different directions:
+
+- **ACE/Beyond Earth/Resilient Earth's very high temporal R2 is partly,
+  but not entirely, a scale-dominance effect.** Excluding just the single
+  largest-turnover company from each mission's test set (BT for ACE, BAE
+  Systems for Beyond Earth, Frontier Agriculture for Resilient Earth)
+  drops R2 only modestly (0.991->0.986, 0.962->0.926, 0.891->0.825) — so
+  the high scores aren't purely an artifact of one company. The more
+  honest read: **median absolute percentage error is 19-27%** for these
+  three missions even though R2 stays 0.83-0.99 — a real, substantial
+  relative miss on a typical company barely dents R2 when a few
+  huge-turnover companies dominate the variance being explained. Genuine
+  same-company, later-year prediction IS an easier task than predicting a
+  never-seen company from scratch (which is what grouped-CV tests) — so
+  temporal R2 being higher than grouped-CV R2 is expected in direction,
+  just not to the degree the headline number implies at face value.
+- **Cross-cutting's apparently-worse temporal R2 (0.439, versus its 0.59
+  grouped-CV baseline) is almost entirely a single-company artifact, in
+  the OPPOSITE direction.** Garmin's 2021/2022 turnover was badly
+  under-predicted (~93% miss — its wearables/fitness business grew far
+  beyond what a model trained on 2013-2018 data could have anticipated).
+  Excluding just Garmin, cross-cutting's temporal R2 is **0.825** — higher
+  than its own grouped-CV baseline, not lower. The raw 0.439 headline
+  number is real (it's what a deployed model would actually score, Garmin
+  included) but attributing it to "cross-cutting doesn't generalize over
+  time" would be the wrong read — one company's genuine business
+  discontinuity is driving nearly the entire gap.
+
+**Bottom line**: all four missions' currently-locked-in models generalize
+across time at least as well as they generalize across companies, once
+scale-dominance is accounted for — no mission showed a genuine,
+company-general temporal breakdown. The one real temporal-specific
+finding is Garmin's own trajectory shift, a single-company story, not a
+model-wide one.

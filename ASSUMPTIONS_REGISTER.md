@@ -390,6 +390,59 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
     `PROJECT_NOTES.md` "Beyond Earth worst-predicted diagnostic
     follow-ups"; `DATA_SCHEMA.md`.
 
+## Extended validation round: targeted sourcing, temporal backtest, sub-segmentation (this session)
+
+59. **Targeted sourcing experiment — 3 batches, all inconclusive/negative**:
+    ACE deep-tech (566 companies), Resilient Earth hardware/photonics (624),
+    Cross-cutting volume (607), each sourced to address a specific
+    diagnostic finding. Using confirmed (not single-pass) numbers where
+    they exist: ACE flat (single-pass 0.83->0.82), Resilient Earth flat
+    (single-pass 0.67->0.66) with its targeted hardware bias unimproved
+    and Veripos developing a new over-prediction problem, Cross-cutting
+    looked positive single-pass (0.59->0.65) but **reversed under full
+    5-repeat confirmation** (0.556, std 0.271 — below the 0.59 baseline).
+    ✅ (investigated and documented; no model changed as a result)
+    `PROJECT_NOTES.md` "Extended validation round" section 1.
+60. **Diminishing-returns finding**: all 3 targeted batches failed to
+    confirm an improvement — suggests the original large adjacent-data
+    pull already captured most available cross-domain signal; smaller
+    targeted batches (hundreds of companies) don't carry enough volume to
+    move a tree-ensemble model further. ✅ `PROJECT_NOTES.md` "Extended
+    validation round" section 2.
+61. **Temporal backtest** (`train 2013-2018, test 2019-2023`, chosen so
+    every mission clears 50+ both-window companies while excluding the
+    thin 2024/2025 filing-lag years): each mission's currently-locked-in
+    model generalizes across time at least as well as across companies,
+    once pooled-R2 scale-dominance is accounted for (checked directly —
+    excluding each mission's single largest-turnover company only
+    modestly changes R2 for ACE/Beyond Earth/Resilient Earth, but flips
+    Cross-cutting's read entirely: 0.439 -> 0.825 excluding Garmin alone,
+    a single-company business-discontinuity story, not a model-wide
+    temporal breakdown). ✅ `PROJECT_NOTES.md` "Extended validation round"
+    section 4.
+62. **Model-type explanation documented** for a non-technical reader:
+    "regression" = predicting a continuous number, not one technique;
+    linear-style and tree-based families were both fairly tested every
+    bake-off, with tree-based models winning only once adjacent data gave
+    enough volume to trust them. ✅ `PROJECT_NOTES.md` "Extended validation
+    round" section 3.
+63. **Sub-segmentation investigation (Resilient Earth + Cross-cutting) —
+    IN PROGRESS, not yet resolved.** Investigation-phase only per explicit
+    instruction (report sample sizes and proposed groupings, confirm
+    before running any sub-group bake-off). Resilient Earth value_stream
+    counts gathered (Geospatial Intelligence 37, Agriculture 21, Climate &
+    Sustainability 12, Earth Observation 9, Health & Wellbeing 5,
+    Extractive Industries 1 — only the first two clear a ~15-20-company
+    viability bar). Cross-cutting's SIC-code distribution checked and
+    found genuinely fragmented (28 distinct 2-digit SIC codes across 107
+    companies, largest single code only 13) even within its only
+    available categorical split (raw Value Stream "Consultancy / Other"
+    86 vs "Explore New Markets" 21) — no clean natural cluster found so
+    far. Full grouping proposal and any bake-off results pending user
+    confirmation. **Item 6 (final locked model decisions) is deliberately
+    not written until this item and the temporal backtest above are both
+    complete** — the temporal backtest is done; this one isn't.
+
 ## Summary
 
 - **41 of 45** were already documented somewhere before this pass (33
