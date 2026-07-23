@@ -69,7 +69,7 @@ def load_data():
     crossings_10m,
 ) = load_data()
 
-intersection_lookup = intersection.set_index("company_id")["credibility_status"] if len(intersection) else pd.Series(dtype=object)
+intersection_lookup = intersection_df.set_index("company_id")["credibility_status"] if len(intersection_df) else pd.Series(dtype=object)
 
 st.title("UK Space Sector Turnover Forecast — Company Explorer")
 st.caption(
