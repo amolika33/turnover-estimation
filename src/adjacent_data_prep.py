@@ -51,7 +51,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, make_company_id
+from src.data_prep import CH_COL, COMPANY_ID_COL, NAME_COL, URL_COL, make_company_id, prepare_source2
 from src.feature_engineering import (
     FEATURE_COLUMNS,
     build_source1_ratio_features,
@@ -59,25 +59,75 @@ from src.feature_engineering import (
     is_international_research_body,
     is_public_sector_body,
 )
-from src.mission_segmentation import MISSION_COL, REAL_MISSIONS
+from src.mission_segmentation import MISSION_COL
 from src.sample_construction import ID_COLS, POPULATION_TYPE_ADJACENT, check_turnover
 from forecast_src.forecast_data_prep import annualize_turnover
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "data" / "processed"
-
-ADJACENT_PATHS = {
-    "ACE": REPO_ROOT / "data" / "raw" / "SatApps ACE training data.xlsx",
-    "Beyond Earth": REPO_ROOT / "data" / "raw" / "SatApps Beyond Earth training data.xlsx",
-    "Resilient Earth": REPO_ROOT / "data" / "raw" / "SatApps Resilient Earth training data.xlsx",
-}
+RAW_DIR = REPO_ROOT / "data" / "raw"
 
 RAW_CH_COL = "Companies House ID"
 RAW_NAME_COL = "Company name"
 RAW_SIC_COL = "SIC Codes (2007) - Code"
 RAW_EMPLOYEES_COL = "Financial Statement 1 - Number of employees"
 
+# One entry per mission "adjacent" pool (ACE/Beyond Earth/Resilient Earth =
+# the 3 real missions; Cross-cutting is new — see module docstring update
+# below). Each mission maps to a LIST of source files: the original SatApps
+# export plus 0+ later batches. Where a mission has more than one file, a
+# company appearing in more than one of that mission's own files (verified:
+# 33 for ACE, 4 for Resilient Earth) is resolved by keeping the file listed
+# FIRST — the original, already weight-tuned file takes precedence over a
+# newer batch for that company (see load_adjacent_source).
+#
+# sic_style: "single" = one comma-separated `SIC Codes (2007) - Code` column
+# (the original files' convention); "numbered" = 4 separate numbered slots
+# (`SIC Codes (2007) 1-4 - Code`) used by the Resilient Earth/Cross-cutting
+# new batches — normalised to the "single" column name at load time so
+# parse_sic_code_1 doesn't need to know which style it received.
+#
+# grants_fundraising_path: the ACE deep-tech batch shipped without the
+# Grants/Fundraisings quantitative columns; a separate side-table with the
+# same 566 companies (joined on Beauhurst URL, verified 566/566 exact match,
+# zero name mismatches) supplies them.
+ADJACENT_SOURCES = {
+    "ACE": [
+        {"path": RAW_DIR / "SatApps ACE training data.xlsx", "reader": "excel", "sic_style": "single"},
+        {
+            "path": RAW_DIR / "SatApps Extra ACE training data.csv",
+            "reader": "csv",
+            "sic_style": "single",
+            "grants_fundraising_path": RAW_DIR / "SatApps Extra ACE training data - Grants&Fundraising.csv",
+        },
+    ],
+    "Beyond Earth": [
+        {"path": RAW_DIR / "SatApps Beyond Earth training data.xlsx", "reader": "excel", "sic_style": "single"},
+    ],
+    "Resilient Earth": [
+        {"path": RAW_DIR / "SatApps Resilient Earth training data.xlsx", "reader": "excel", "sic_style": "single"},
+        {"path": RAW_DIR / "SatApps Extra Resilient Earth training data.csv", "reader": "csv", "sic_style": "numbered"},
+    ],
+    "Cross-cutting": [
+        {"path": RAW_DIR / "SatApps Cross Cutting training data.csv", "reader": "csv", "sic_style": "numbered"},
+    ],
+}
+ADJACENT_MISSIONS = list(ADJACENT_SOURCES.keys())
+
+# Kept for any external caller that still expects the pre-expansion,
+# 3-file mapping (mission -> single path) — the original files only.
+ADJACENT_PATHS = {mission: specs[0]["path"] for mission, specs in ADJACENT_SOURCES.items() if mission != "Cross-cutting"}
+
 N_STATEMENTS = 10
+
+# Date-like columns actually read via `.dt` downstream (build_turnover_panel,
+# build_source1_ratio_features, add_recency) — the original 3 files are
+# Excel (openpyxl auto-parses these as datetime), but the 3 new CSV batches
+# need explicit parsing, since pandas.read_csv leaves them as plain strings.
+_CSV_DATE_COLS = [f"Financial Statement {i} - Date of accounts" for i in range(1, N_STATEMENTS + 1)] + [
+    "Grants - Date of the company's latest grant",
+    "Fundraisings - Date of the company's latest fundraising",
+]
 
 # Micro/Small/Medium/Large by employee-count only — the standard UK/EU SME
 # convention (Companies Act 2006 / EU Recommendation 2003/361/EC,
@@ -93,8 +143,84 @@ SIZE_BUCKET_BINS = [-np.inf, 10, 50, 250, np.inf]
 SIZE_BUCKET_LABELS = ["Micro", "Small", "Medium", "Large"]
 
 
+def _load_raw_file(spec: dict) -> pd.DataFrame:
+    """Loads one configured source file and normalises it to the schema the
+    rest of this module already expects (RAW_SIC_COL name, parsed dates,
+    grants/fundraising columns present) — so every downstream function keeps
+    working on any mission's raw frame without needing to know which file or
+    file-format it came from."""
+    if spec["reader"] == "excel":
+        df = pd.read_excel(spec["path"], sheet_name=0)
+    else:
+        df = pd.read_csv(spec["path"], low_memory=False)
+        for col in _CSV_DATE_COLS:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    if spec["sic_style"] == "numbered":
+        df = df.rename(columns={"SIC Codes (2007) 1 - Code": RAW_SIC_COL})
+
+    if "grants_fundraising_path" in spec:
+        gf = pd.read_csv(spec["grants_fundraising_path"], low_memory=False)
+        gf["Grants - Date of the company's latest grant"] = pd.to_datetime(
+            gf["Grants - Date of the company's latest grant"], errors="coerce"
+        )
+        gf["Fundraisings - Date of the company's latest fundraising"] = pd.to_datetime(
+            gf["Fundraisings - Date of the company's latest fundraising"], errors="coerce"
+        )
+        gf = gf.drop(columns=["Company name"])
+        df = df.merge(gf, on="Beauhurst URL", how="left")
+
+    return df
+
+
 def load_adjacent_source(mission: str) -> pd.DataFrame:
-    return pd.read_excel(ADJACENT_PATHS[mission], sheet_name=0)
+    """Loads and concatenates every configured source file for `mission`
+    (see ADJACENT_SOURCES). A company appearing in more than one of this
+    mission's own files (verified: 33 for ACE, 4 for Resilient Earth — the
+    new batches re-include some companies the original file already had) is
+    resolved by keeping the row from whichever file is listed FIRST for
+    that mission — the original file takes precedence over a newer batch,
+    same precedent as data_prep.resolve_duplicate_ch_numbers keeping one
+    row per genuine duplicate rather than fabricating a merge between two
+    versions of the same company's data."""
+    frames = [_load_raw_file(spec) for spec in ADJACENT_SOURCES[mission]]
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    dedup_key = combined[RAW_CH_COL].astype("string").str.strip().str.upper()
+    return combined.loc[~dedup_key.duplicated(keep="first")].reset_index(drop=True)
+
+
+def space_company_ch_numbers() -> set:
+    """CH numbers of every real space company (Source 2, all missions
+    including Cross-cutting) — used to exclude a company from an adjacent
+    batch when it's already a real, authoritatively-labelled target-mission
+    company (verified: 42 ACE, 22 Resilient Earth, 6 Cross-cutting rows in
+    the new batches overlap this way, including Open Cosmos). Adding such a
+    company again as population_type="adjacent" would duplicate an
+    already-present company under a different, weaker-signal tag."""
+    source2, _ = prepare_source2()
+    return set(source2[CH_COL].dropna().astype(str).str.strip().str.upper())
+
+
+def exclude_space_company_overlap(raw: dict, space_ch: set) -> tuple[dict, pd.DataFrame]:
+    filtered = {}
+    log_rows = []
+    for mission, df in raw.items():
+        ch = df[RAW_CH_COL].astype("string").str.strip().str.upper()
+        is_space = ch.isin(space_ch)
+        if is_space.any():
+            log_rows.append(
+                df.loc[is_space, [RAW_NAME_COL, RAW_CH_COL]].assign(
+                    mission=mission, reason="already_a_labelled_space_company"
+                )
+            )
+        filtered[mission] = df.loc[~is_space].reset_index(drop=True)
+    log = (
+        pd.concat(log_rows, ignore_index=True)
+        if log_rows
+        else pd.DataFrame(columns=[RAW_NAME_COL, RAW_CH_COL, "mission", "reason"])
+    )
+    return filtered, log
 
 
 def assign_company_id(df: pd.DataFrame) -> pd.DataFrame:
@@ -374,26 +500,39 @@ def build_mission_training_features(
     return panel, turnover_quality_log
 
 
+def load_all_raw() -> dict:
+    """Loads every mission's adjacent source file(s) (ADJACENT_MISSIONS —
+    the 3 real missions plus Cross-cutting), drops any row that's actually
+    an already-labelled real space company (exclude_space_company_overlap),
+    then assigns company_id. Shared by build_all_adjacent_training_features
+    and main() so the load/exclude/id-assignment logic lives in one place."""
+    raw = {mission: load_adjacent_source(mission) for mission in ADJACENT_MISSIONS}
+    raw, space_overlap_log = exclude_space_company_overlap(raw, space_company_ch_numbers())
+    raw = {mission: assign_company_id(df) for mission, df in raw.items()}
+    return raw, space_overlap_log
+
+
 def build_all_adjacent_training_features() -> pd.DataFrame:
     """Runs the full pipeline (load raw files, assign company_id, build
-    the turnover panel, annualize it once across all 3 missions, then
-    build each mission's full training-feature set) and returns ONE
-    concatenated dataframe across all 3 missions.
+    the turnover panel, annualize it once across all missions, then build
+    each mission's full training-feature set) and returns ONE concatenated
+    dataframe across all of ADJACENT_MISSIONS (the 3 real missions plus
+    Cross-cutting).
 
     sample_weight is left as the UNSCALED base weight (1 / company row
     count) — model_bakeoff.get_mission_features_with_adjacent applies
     ADJACENT_SAMPLE_WEIGHT at merge time, so this Excel-derived build
     (the expensive part) only needs to run once regardless of how many
     candidate weights get tried."""
-    raw = {mission: assign_company_id(load_adjacent_source(mission)) for mission in REAL_MISSIONS}
+    raw, _ = load_all_raw()
     overlap_lookup = compute_multi_mission_overlap(raw)
 
-    panel_frames = [build_turnover_panel(raw[mission]).assign(mission=mission) for mission in REAL_MISSIONS]
+    panel_frames = [build_turnover_panel(raw[mission]).assign(mission=mission) for mission in ADJACENT_MISSIONS]
     panel_all = pd.concat(panel_frames, ignore_index=True)
     panel_all, _ = annualize_adjacent_panel(panel_all)
 
     feature_frames = []
-    for mission in REAL_MISSIONS:
+    for mission in ADJACENT_MISSIONS:
         panel_m = panel_all[panel_all["mission"] == mission].copy()
         features_m, _ = build_mission_training_features(mission, raw[mission], panel_m, overlap_lookup)
         feature_frames.append(features_m)
@@ -403,12 +542,16 @@ def build_all_adjacent_training_features() -> pd.DataFrame:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    raw = {mission: assign_company_id(load_adjacent_source(mission)) for mission in REAL_MISSIONS}
+    raw, space_overlap_log = load_all_raw()
     overlap_lookup = compute_multi_mission_overlap(raw)
+    if len(space_overlap_log):
+        space_overlap_log.to_csv(OUTPUT_DIR / "adjacent_space_company_overlap_log.csv", index=False)
+        print(f"Excluded {len(space_overlap_log)} rows already present as labelled space companies:")
+        print(space_overlap_log["mission"].value_counts().to_string())
 
     static_frames = []
     panel_frames = []
-    for mission in REAL_MISSIONS:
+    for mission in ADJACENT_MISSIONS:
         df = raw[mission]
         static = build_static_features(df, mission, overlap_lookup)
         panel = build_turnover_panel(df).assign(mission=mission)
@@ -462,7 +605,7 @@ def main() -> None:
     print("\n=== Full training-feature build (per mission) ===")
     feature_frames = []
     quality_logs = []
-    for mission in REAL_MISSIONS:
+    for mission in ADJACENT_MISSIONS:
         panel_m = panel_all[panel_all["mission"] == mission].copy()
         features_m, quality_log_m = build_mission_training_features(mission, raw[mission], panel_m, overlap_lookup)
         feature_frames.append(features_m)

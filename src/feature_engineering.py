@@ -352,9 +352,16 @@ def build_source3_features(src3: pd.DataFrame) -> pd.DataFrame:
     for src_col, out_col in SOURCE3_SAFE_BOOLEAN_SIGNALS.items():
         out[out_col] = df[src_col].astype(int)
 
-    out["has_attended_accelerator"] = df[SOURCE3_ACCELERATOR_NAME_COLS].notna().any(axis=1).astype(int)
-    out["accelerator_count"] = df[SOURCE3_ACCELERATOR_NAME_COLS].notna().sum(axis=1)
-    out["is_academic_spinout"] = df[SOURCE3_SPINOUT_NAME_COLS].notna().any(axis=1).astype(int)
+    # Some adjacent-data sources carry fewer accelerator/spinout slots than
+    # Source 3's own 5/2 (e.g. the Cross-cutting adjacent batch has only 4
+    # accelerator slots) — use whichever of these slot columns the frame
+    # actually has rather than assuming all of them exist. Presence/count
+    # only (never the raw names), same convention regardless of slot count.
+    accelerator_cols = [c for c in SOURCE3_ACCELERATOR_NAME_COLS if c in df.columns]
+    spinout_cols = [c for c in SOURCE3_SPINOUT_NAME_COLS if c in df.columns]
+    out["has_attended_accelerator"] = df[accelerator_cols].notna().any(axis=1).astype(int)
+    out["accelerator_count"] = df[accelerator_cols].notna().sum(axis=1)
+    out["is_academic_spinout"] = df[spinout_cols].notna().any(axis=1).astype(int)
 
     out["grants_count"] = df["Grants - Number of grants received by the company"]
     out["grants_total_amount"] = _clean_currency(
