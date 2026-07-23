@@ -1,5 +1,21 @@
 # Factor Importance Report
 
+> **STALE — built against the pre-lock models, needs full regeneration,
+> not a doc-only fix.** Since this report was generated: ACE and Beyond
+> Earth were switched from Lasso (space-only) to Extra Trees
+> (adjacent-augmented) — different model family entirely, so every
+> coefficient/importance below for those 2 missions no longer reflects
+> the deployed model. Cross-cutting now has 2 deployed sub-models
+> (Consultancy/Other + blended fallback, both Elastic Net) and isn't
+> covered here at all — it never had a model when this was written. Only
+> Resilient Earth's entries (CatBoost, estimation side) still match the
+> currently deployed model. Regenerating this properly requires re-running
+> the actual factor-importance extraction against the current
+> `final_model_*.joblib` files (see `src/reporting.py`'s
+> `extract_feature_weights`, which already produces the raw per-mission
+> `feature_weights_*.csv` inputs this report was built from) — flagged
+> here, not done, per explicit instruction not to regenerate yet.
+
 What actually drives each model's predictions, and by how much. Covers all
 6 models across both pipelines (3 missions × estimation + forecasting),
 the raw Beauhurst Financial Statement field inventory, a grant/accelerator

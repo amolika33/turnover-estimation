@@ -1,11 +1,16 @@
 # Adjacent-Company Data Requirements
 
-This documents the format the incoming ~23k adjacent-company files need to
-be in for smooth integration into the existing pipeline. The merge itself
-isn't built yet (no data to test against) — this is what to ask for /
-check against when the files arrive. See PROJECT_NOTES.md "Current status / build
-order" step 3 and "Documented assumptions and thresholds" for the related
-pipeline-side prep.
+**Historical note**: sections 1-4 below were written before any adjacent
+data existed, as a spec for what to ask for. All 6 adjacent files have
+since arrived (3 original + 3 later targeted-sourcing batches) and the
+merge is fully built (`src/adjacent_data_prep.py`, wired into
+`src/model_bakeoff.py`/`src/model_selection.py`/`src/predict.py`) — kept
+here as-written for the historical record of what was originally
+specified, with "Update" sections and a "Schema variations" section added
+below documenting what was actually found once real files existed. See
+PROJECT_NOTES.md's "Adjacent-company groundwork", "Adjacent-company
+integration: bake-off results", and "Extended validation round" sections
+for the full build/validation/decision narrative.
 
 ## 1. Schema: Source 1's raw Beauhurst format, not Source 2's
 
@@ -171,20 +176,93 @@ and `adjacent_turnover_panel.csv` are standalone outputs for review: no
 adjacent row has entered `sample_construction.py`/`feature_engineering.py`/
 `model_bakeoff.py` yet.
 
-## Not covered here (deferred to the actual merge implementation)
+## Not covered here (deferred to the actual merge implementation) — STATUS UPDATE
 
-- Exact column-name mapping from Source 1's raw fields to the feature set
-  `feature_engineering.py` currently builds from Source 2.
-- How `sample_weight` gets set for adjacent rows (a `ADJACENT_SAMPLE_WEIGHT`
-  constant exists in `model_bakeoff.py`, unused, to be tuned empirically
-  once real data exists — see its docstring).
-- Company-identity reconciliation between a space company and the *same*
-  company appearing in an adjacent file (unlikely but not impossible given
-  ~23k rows) — not addressed; flag if it turns out to matter once real
-  data is in hand.
+All 4 items below were genuinely open when this section was first written.
+All 4 are now resolved:
+
+- ~~Exact column-name mapping from Source 1's raw fields to the feature set
+  `feature_engineering.py` currently builds from Source 2.~~ **Done** —
+  `src/adjacent_data_prep.py`'s `build_mission_training_features` (and the
+  `build_adjacent_ratio_features`/`build_adjacent_source3_features` helpers
+  it calls) is the full mapping, reusing `feature_engineering.py`'s own
+  Source 1/3 builders unchanged.
+- ~~How `sample_weight` gets set for adjacent rows...~~ **Done, tuned, and
+  actively used** — `ADJACENT_SAMPLE_WEIGHT` is no longer an unused
+  placeholder. Empirically tuned per mission (ACE=0.2, Beyond Earth=1.0,
+  Resilient Earth=0.2) via a 3-model proxy sweep — see PROJECT_NOTES.md
+  "Adjacent-company integration: bake-off results".
+- ~~Company-identity reconciliation between a space company and the same
+  company appearing in an adjacent file...~~ **Done, and it DID turn out
+  to matter**: `exclude_space_company_overlap` in `adjacent_data_prep.py`
+  checks every adjacent row's CH number against the full space-company
+  population before it enters training — found 49 (ACE), 13 (Beyond
+  Earth), 27 (Resilient Earth), 6 (Cross-cutting) rows that were actually
+  already-labelled real space companies (including some in the ORIGINAL 3
+  files too, not just the later targeted-sourcing batches — a gap that
+  had gone unchecked until this was built). These are dropped from the
+  adjacent pool entirely rather than double-counted under a weaker tag.
+  See PROJECT_NOTES.md "Extended validation round" and this doc's own
+  "Schema variations across the 6 adjacent files" section below.
 - A Companies House API lookup to recover real incorporation dates for
-  `company_age_years` (12,127 companies) — flagged as worth pursuing, not
-  scoped or built.
+  `company_age_years` (12,127 companies) — **still not built**, but worth
+  re-flagging: the 3 targeted-sourcing batches (added later, see below)
+  natively carry an `Incorporation date (Companies House)` field that the
+  original 3 files never had — this could resolve `company_age_years` for
+  those specific companies without any CH-API lookup at all. Not
+  implemented (out of scope for the targeted-sourcing integration that
+  found it) — flagged as a real, comparatively cheap follow-up opportunity
+  for whoever picks this up next.
+
+## Schema variations across the 6 adjacent files (found during the targeted-sourcing integration)
+
+3 additional files arrived after the original 3 (`SatApps Extra ACE
+training data.csv` — 566 rows deep-tech batch, `SatApps Extra Resilient
+Earth training data.csv` — 624 rows hardware/photonics batch, `SatApps
+Cross Cutting training data.csv` — 607 rows, plus a separate `SatApps
+Extra ACE training data - Grants&Fundraising.csv` side-table). Validating
+these against this document's original checklist surfaced real schema
+inconsistencies **not just against the original 3 files, but among the 3
+new files themselves** — the assumption that all adjacent exports share
+one common schema turned out to be wrong once a second sourcing round
+actually happened:
+
+- **SIC code column**: the original 3 files and the new ACE batch use one
+  comma-separated `SIC Codes (2007) - Code` column (`sic_style: "single"`
+  in `adjacent_data_prep.py`'s `ADJACENT_SOURCES`). The new Resilient
+  Earth and Cross-cutting batches instead use 4 numbered slots
+  (`SIC Codes (2007) 1-4 - Code`, `sic_style: "numbered"`) — normalised to
+  the single-column convention at load time (`_load_raw_file`) so
+  `parse_sic_code_1` doesn't need to know which style it received.
+- **Accelerator slots**: the original 3 files and the new ACE/Resilient
+  Earth batches have 7 slots; the new Cross-cutting batch has only 4.
+  `feature_engineering.py`'s `build_source3_features` now uses whichever
+  slot columns a frame actually has (`accelerator_cols = [c for c in
+  SOURCE3_ACCELERATOR_NAME_COLS if c in df.columns]`) instead of assuming
+  a fixed count.
+- **Grants/fundraising fields**: present in the new Resilient Earth and
+  Cross-cutting batches, but **absent** from the new ACE batch — resolved
+  by joining a separate side-table (`SatApps Extra ACE training data -
+  Grants&Fundraising.csv`, 566 rows, joined on Beauhurst URL, verified
+  566/566 exact match with zero name mismatches) rather than leaving ACE's
+  new companies with null grants data.
+- **CSV vs Excel**: the original 3 files are `.xlsx` (dates auto-parsed by
+  `pandas.read_excel`); all 3 new batches are `.csv`, which needed
+  explicit `pd.to_datetime` parsing for the Financial Statement date
+  columns and the grants/fundraising latest-date columns before any
+  `.dt` access downstream — handled in `_load_raw_file`'s `_CSV_DATE_COLS`
+  list.
+- **Within-mission duplicates**: a company appearing in both the original
+  file and its mission's new batch (verified: 33 for ACE, 4 for Resilient
+  Earth) is resolved by keeping the row from whichever file is listed
+  FIRST in `ADJACENT_SOURCES` — the original, already weight-tuned file
+  takes precedence.
+
+See `src/adjacent_data_prep.py`'s `ADJACENT_SOURCES` registry for the
+authoritative per-file configuration, and PROJECT_NOTES.md's "Extended
+validation round" section for the full validation/integration narrative
+and the Stage C bake-off results these batches produced (all 3
+inconclusive/negative — see the "diminishing-returns finding").
 
 **Update**: the filing-period annualization fix (`turnover x
 52/actual_weeks`) has now been applied to the reconstructed adjacent

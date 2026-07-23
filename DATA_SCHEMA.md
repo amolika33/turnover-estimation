@@ -119,15 +119,21 @@ boolean signals in the final feature set.
    collections, one per mission, so adjacent-company exports will already
    arrive as three mission-specific files. The mapping table mainly documents
    *why* those collections were built that way.
-4. **Schema implication**: adjacent-company exports will likely come out in
-   the **raw Beauhurst format** (Source 1's style — repeated "Financial
-   Statement N" blocks), not the curated master-sheet format (Source 2 —
-   year-panel, growth rates, HPB score), since Source 2's extra fields were
-   purpose-built/curated for the space companies specifically. This means
-   Source 1's structure, not Source 2's, is the realistic **common schema**
-   to design `feature_engineering.py` around if the model is meant to
-   eventually take both space and adjacent rows through the same pipeline.
-   Source 2 should be treated as space-company-only enrichment for now.
+4. **Schema implication — CONFIRMED, not speculative anymore**: adjacent-
+   company exports arrived in the **raw Beauhurst format** (Source 1's
+   style — repeated "Financial Statement N" blocks), not the curated
+   master-sheet format (Source 2 — year-panel, growth rates, HPB score),
+   exactly as anticipated — Source 2's extra fields were purpose-built/
+   curated for the space companies specifically and don't exist for a
+   general adjacent-company export. `src/adjacent_data_prep.py` builds
+   Source 1/3-style features (ratios, grants/accelerator signals) from
+   these files directly, reusing `feature_engineering.py`'s own
+   `build_source1_ratio_features`/`build_source3_features` unchanged. See
+   `ADJACENT_DATA_REQUIREMENTS.md` for the full column-level detail and
+   the schema variations found once all 6 adjacent files existed (3
+   original + 3 later targeted-sourcing batches) — not every batch
+   followed an identical schema (see that doc's "Schema variations across
+   the 6 adjacent files" section).
 
 ## Excluded columns (internal-only, exclude from modelling)
 
@@ -217,9 +223,12 @@ the same companies (some will be missing from one side or the other).
   `grant_recency_years`, and the fundraising equivalents).
 - ~~Accelerator attendance — partially present in Source 1; to be
   expanded.~~ **Done** — see "Source 3" above (`has_attended_accelerator`,
-  `accelerator_count`). Still relevant for adjacent companies, where this +
-  financials may be the *only* data available (Source 3-style enrichment
-  hasn't been confirmed to exist for the adjacent-company universe yet).
+  `accelerator_count`). **Also confirmed for adjacent companies**: all 6
+  adjacent files (3 original + 3 targeted-sourcing batches) carry this
+  Source 1/3-style data natively — `adjacent_data_prep.py`'s
+  `build_adjacent_source3_features` builds it the same way, with a
+  per-file adjustment for accelerator slot count (4-7 slots depending on
+  the file, not always 5) — see `ADJACENT_DATA_REQUIREMENTS.md`.
 - ~~Source 1's ~20 Financial Statement 1 financial ratios (gearing %,
   current ratio, ROCE, ROTA, debtor/creditor days, etc.) — not yet
   incorporated.~~ **Done** — see "Source 1 financial ratios" below.
