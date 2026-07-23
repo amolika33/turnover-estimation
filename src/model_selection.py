@@ -70,6 +70,7 @@ from src.model_bakeoff import (
     cast_categoricals,
     get_cross_cutting_features,
     get_mission_features,
+    get_mission_features_with_adjacent,
     get_preprocessor,
 )
 
@@ -220,6 +221,61 @@ def fit_final_model(mission_df: pd.DataFrame, model_name: str, n_splits: int = 5
     return search.best_estimator_, search.best_params_
 
 
+# LOCKED DECISION (see PROJECT_NOTES.md "Extended validation round"
+# section 6, ASSUMPTIONS_REGISTER.md): ACE and Beyond Earth's adjacent-
+# augmented Extra Trees models, confirmed via a full 5-repeat pass
+# earlier this project (ACE R2=0.72 std=0.46, Beyond Earth R2=0.69
+# std=0.35) — a real, human decision to switch the deployed model, not
+# re-derived by select_model()'s ranking here. This differs from how
+# Resilient Earth/Cross-cutting's blended fallback were handled: those
+# had a full multi-model bake-off available to rank fairly; ACE/Beyond
+# Earth's confirmatory pass ran ONLY Extra Trees at full 5-repeat rigor
+# (a disclosed compute tradeoff — see PROJECT_NOTES.md), so there's no
+# full-rigor multi-model comparison to run select_model() against here.
+# HONEST CAVEAT, checked and not hidden: applying this project's own
+# compute_robustness() check directly to Extra Trees' own 25-fold
+# confirmatory data shows a robustness violation for BOTH missions (a
+# genuine MAE-blowup fold — max fold MAE is >3x the model's own median
+# fold MAE) — the same pattern that excluded Extra Trees from Cross-
+# cutting's blended-fallback selection. Locked in anyway per explicit
+# instruction naming Extra Trees specifically, informed by the confirmed
+# R2 values above — flagged here rather than silently overridden.
+LOCKED_ADJACENT_MODELS = {
+    "ACE": {"model": "Extra Trees", "adjacent_weight": 0.2, "confirmed_r2": 0.72},
+    "Beyond Earth": {"model": "Extra Trees", "adjacent_weight": 1.0, "confirmed_r2": 0.69},
+}
+
+
+def select_locked_adjacent_missions(missions: list) -> tuple[list[dict], dict]:
+    """Refits each mission in LOCKED_ADJACENT_MODELS on its full labelled +
+    adjacent training data (same fit_final_model convention as every other
+    mission), at the already-tuned adjacent_sample_weight, with the
+    already-decided model type — not re-derived by select_model()'s
+    ranking (see LOCKED_ADJACENT_MODELS' comment for why)."""
+    rows = []
+    model_paths = {}
+    for mission in missions:
+        cfg = LOCKED_ADJACENT_MODELS[mission]
+        mission_df = get_mission_features_with_adjacent(mission, adjacent_sample_weight=cfg["adjacent_weight"])
+        model, params = fit_final_model(mission_df, cfg["model"])
+        r2_mean = cfg["confirmed_r2"]
+        rows.append(
+            {
+                "mission": mission,
+                "sub_segment": "",
+                "routing_field": "",
+                "routing_value": "",
+                "selected_model": cfg["model"],
+                "r2_mean": r2_mean,
+                "usable": r2_mean > USABILITY_R2_THRESHOLD,
+                "exclusion_reason": "",
+                "best_params": json.dumps(params, default=str),
+            }
+        )
+        model_paths[mission] = model
+    return rows, model_paths
+
+
 CROSS_CUTTING_MISSION = "Cross-cutting"
 CROSS_CUTTING_ROUTING_FIELD = "value_stream"
 # LOCKED DECISION (see PROJECT_NOTES.md "Extended validation round" section
@@ -344,11 +400,18 @@ def main() -> None:
     )
     args = parser.parse_args()
     missions = [] if args.only_cross_cutting else (args.mission or REAL_MISSIONS)
+    # ACE and Beyond Earth's deployed models are a locked decision (see
+    # LOCKED_ADJACENT_MODELS above) — they skip the composite-rank/
+    # robustness-filter loop below entirely (which would otherwise refit
+    # and print their now-superseded original space-only ranking, only to
+    # be thrown away) and get fit directly via select_locked_adjacent_missions.
+    locked_adjacent_missions = [m for m in missions if m in LOCKED_ADJACENT_MODELS]
+    ranked_missions = [m for m in missions if m not in LOCKED_ADJACENT_MODELS]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     selection_rows = []
     selected_models_rows = []
-    for mission in missions:
+    for mission in ranked_missions:
         print(f"\n=== {mission} ===")
         mission_df = get_mission_features(mission)
         summary, fold_detail = load_bakeoff_results(mission)
@@ -424,6 +487,18 @@ def main() -> None:
         ranked_out.insert(0, "Mission", mission)
         ranked_out["selected"] = ranked_out["Model"] == winner
         selection_rows.append(ranked_out)
+
+    if locked_adjacent_missions:
+        print(f"\n=== Locked adjacent-augmented models: {', '.join(locked_adjacent_missions)} ===")
+        locked_rows, locked_model_paths = select_locked_adjacent_missions(locked_adjacent_missions)
+        selected_models_rows.extend(locked_rows)
+        for mission, model in locked_model_paths.items():
+            slug = mission.lower().replace(" ", "_")
+            model_path = OUTPUT_DIR / f"final_model_{slug}.joblib"
+            joblib.dump(model, model_path)
+            print(f"  [{mission}] Wrote {model_path}")
+        for row in locked_rows:
+            print(f"  [{row['mission']}] {row['selected_model']}, r2_mean={row['r2_mean']:.3f}, usable={row['usable']}")
 
     print(f"\n=== {CROSS_CUTTING_MISSION} (2 sub-models: blended fallback + locked Consultancy/Other split) ===")
     cc_rows, cc_model_paths = select_cross_cutting_models()
