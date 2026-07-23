@@ -1,0 +1,584 @@
+"""Validate the two required inputs to the 2030 forecasting pipeline
+(FORECASTING_METHODOLOGY.md sec 2-3): the completed company baseline
+(turnover-estimation's `assemble.py` output, read as-is — not built here)
+and the historical company-year panel (built here, by
+build_historical_panel_source, since no existing turnover-estimation
+output covers all 4 mission groups — see that function's docstring).
+
+Column names in the source CSVs don't match the methodology's spec names
+(e.g. "Organisation Name" vs `company_name`, "year" vs `accounting_year`) —
+*_COLUMN_MAP below renames them explicitly rather than requiring every
+downstream forecast_src module to know both naming schemes.
+
+Some spec-required fields have no equivalent anywhere in the
+turnover-estimation pipeline's output (current_assets, liabilities,
+funding_raised as a per-year figure, baseline_lower/baseline_upper
+prediction intervals). These are never fabricated — `find_missing_fields`
+reports them explicitly so downstream modules (feature engineering in
+particular) know a feature can't be built, rather than silently training on
+a placeholder.
+
+Each of the five checks in sec 3.1-3.5 follows the same shape: rows that
+fail are pulled into a quality-log entry (never silently dropped without a
+trace — same convention as `src/data_prep.py` and `src/mission_segmentation.py`),
+and the "clean" frame returned is what the next stage should actually use.
+"""
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from src.data_prep import COMPANY_ID_COL, prepare_source2
+from src.feature_engineering import STATIC_COLS, _melt_year_indexed, build_source1_annualization_factors
+from src.mission_segmentation import MISSION_COL, REAL_MISSIONS, load_mapping, segment_missions
+from src.sample_construction import YEARS, build_long_panel, split_labelled_inference
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / "data" / "processed"
+
+# mission_segmentation.py's own spelling for the fourth group (its
+# `training_eligible` check uses this literal directly, no exported
+# constant exists) — matched here rather than "Cross-Cutting" (the
+# methodology's canonical spelling, applied downstream by check_mission).
+CROSS_CUTTING_MISSION_VALUE = "Cross-cutting"
+
+# Defaults: the completed baseline is turnover-estimation's assemble.py
+# output. The historical panel is built fresh by build_historical_panel_source
+# below, NOT read from labelled_features.csv — that file only covers ACE/
+# Beyond Earth/Resilient Earth (mission_segmentation.py's training_eligible
+# flag deliberately excludes Cross-cutting from ML feature engineering,
+# since those companies never train any mission model). Forecasting needs
+# Cross-cutting's observed turnover history too — the 108 companies with
+# real history are forecastable with company-level growth models
+# (persistence, CAGR) that don't need a mission-specific model at all, so
+# they don't need labelled_features.csv's richer ML feature set either.
+COMPLETED_BASELINE_PATH = DATA_DIR / "final_completed_dataset.csv"
+HISTORICAL_PANEL_SOURCE_PATH = DATA_DIR / "forecast_full_historical_panel.csv"
+HISTORICAL_PANEL_PATH = HISTORICAL_PANEL_SOURCE_PATH
+
+# Sec 3.4: "outside the supported historical range" — reuse the estimation
+# pipeline's own YEARS range rather than a second hardcoded copy that could
+# drift out of sync with it (the same class of bug fixed in predict.py's
+# Source3 merge earlier in this project).
+SUPPORTED_YEAR_RANGE = (min(YEARS), max(YEARS))
+
+# Sec 3.5. Canonical spelling per the methodology doc; the source data spells
+# the fourth value "Cross-cutting" (lowercase c) — check_mission normalizes
+# case-insensitively rather than treating that as an invalid value.
+VALID_MISSIONS = ["ACE", "Beyond Earth", "Resilient Earth", "Cross-Cutting"]
+PRIMARY_FIT_MISSIONS = ["ACE", "Beyond Earth", "Resilient Earth"]
+
+REQUIRED_BASELINE_FIELDS = [
+    "company_id",
+    "company_name",
+    "mission",
+    "baseline_year",
+    "baseline_turnover",
+    "turnover_source",
+    "baseline_lower",
+    "baseline_upper",
+    "baseline_reliability",
+]
+
+BASELINE_COLUMN_MAP = {
+    "company_id": "company_id",
+    "Organisation Name": "company_name",
+    "Mission": "mission",
+    "year": "baseline_year",
+    "turnover_value": "baseline_turnover",
+    "turnover_source": "turnover_source",
+    "reliability": "baseline_reliability",
+}
+
+# assemble.py's turnover_source has 4 values, not the spec's 2:
+# "observed" and "predicted" both carry a numeric baseline_turnover and map
+# cleanly (predicted -> estimated, matching predict.py's own reliability
+# framing). "cross_cutting_unmodelled" and "no_model_insufficient_data" both
+# carry NO baseline_turnover at all (confirmed: 312 rows null baseline_turnover
+# == 197 + 115) — there is no "estimated" value to report for these, so they
+# are left unmapped (turnover_source -> NaN) rather than forced into either
+# spec category; normalize_turnover_source logs every one of these rows.
+TURNOVER_SOURCE_MAP = {"observed": "observed", "predicted": "estimated"}
+
+REQUIRED_PANEL_FIELDS = [
+    "company_id",
+    "company_name",
+    "mission",
+    "accounting_year",
+    "turnover",
+    "employees",
+    "total_assets",
+    "current_assets",
+    "liabilities",
+    "funding_raised",
+    "export_revenue",
+    "company_age",
+    "company_size",
+    "value_stream",
+]
+
+PANEL_COLUMN_MAP = {
+    "company_id": "company_id",
+    "Organisation Name": "company_name",
+    "Mission": "mission",
+    "year": "accounting_year",
+    "total_turnover": "turnover",
+    "total_employees": "employees",
+    "balance_sheet_total_assets": "total_assets",
+    "total_export_revenue": "export_revenue",
+    "company_age_years": "company_age",
+    "company_size": "company_size",
+    "value_stream": "value_stream",
+}
+# current_assets, liabilities: no equivalent column anywhere in the
+# turnover-estimation output (only a single combined balance_sheet_total_assets
+# figure exists, no asset/liability breakdown was ever extracted from Source 1/2).
+# funding_raised: fundraising_total_amount exists in labelled_features.csv but
+# is cumulative-to-date as of the Beauhurst export date, not a per-accounting-
+# year figure — aliasing it to funding_raised would misrepresent every
+# historical row as if that company's full lifetime funding total applied
+# retroactively to each of its earlier years, which sec 2.2 explicitly
+# prohibits ("current company values must not be attached retrospectively to
+# earlier years"). Left absent rather than aliased; see find_missing_fields.
+
+
+def annualize_turnover(
+    df: pd.DataFrame,
+    turnover_col: str,
+    year_col: str,
+    factors: pd.DataFrame,
+    id_col: str = COMPANY_ID_COL,
+    eligible_mask: pd.Series | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Applies build_source1_annualization_factors' (company_id, year) ->
+    annualization_factor lookup to a turnover column, correcting for
+    non-standard (non-52-week) accounting periods before that turnover value
+    can distort any year-over-year growth calculation downstream
+    (log_growth_1y, CAGR, gazelle streaks all walk these transitions later
+    in the forecasting pipeline). Missing factor (no Source 1 weeks value
+    for that company/year) defaults to 1.0 — no evidence of a non-standard
+    period is not evidence it wasn't standard, so the raw reported figure is
+    trusted as-is, same principle build_source1_annualization_factors itself
+    documents.
+
+    `eligible_mask` (aligned to `df`'s index) restricts which rows may be
+    corrected at all — used for the completed baseline, where a
+    `turnover_source="predicted"` row is a model output, not a real filing
+    tied to any actual accounting period, so annualizing it would be
+    correcting a number that was never anchored to a real calendar period in
+    the first place. Defaults to every row eligible (the historical panel's
+    case — every row there is a real filed year).
+
+    Returns (adjusted_df, log_df) — log_df records every row where the
+    factor was genuinely != 1.0 (old value, factor, new value), so the
+    correction is auditable rather than a silent multiply."""
+    df = df.copy()
+    if eligible_mask is None:
+        eligible_mask = pd.Series(True, index=df.index)
+
+    merged = df.merge(
+        factors.rename(columns={"year": year_col}), on=[id_col, year_col], how="left"
+    )
+    # factors is deduplicated on (id_col, year_col) inside
+    # build_source1_annualization_factors, so this left join can never fan
+    # out — asserted rather than assumed, since the next line relies on
+    # merged's row order/count matching df's exactly to restore the index.
+    assert len(merged) == len(df), "annualize_turnover: merge fanned out — factors not deduplicated?"
+    merged.index = df.index
+    merged["annualization_factor"] = merged["annualization_factor"].fillna(1.0)
+
+    adjusted_mask = (
+        (merged["annualization_factor"] != 1.0) & merged[turnover_col].notna() & eligible_mask
+    )
+    log_df = merged.loc[
+        adjusted_mask, [id_col, year_col, turnover_col, "weeks", "annualization_factor"]
+    ].copy()
+    log_df["annualized_turnover"] = log_df[turnover_col] * log_df["annualization_factor"]
+    log_df = log_df.rename(columns={turnover_col: "raw_turnover"})
+
+    merged.loc[adjusted_mask, turnover_col] = merged.loc[adjusted_mask, turnover_col] * merged.loc[
+        adjusted_mask, "annualization_factor"
+    ]
+    merged = merged.drop(columns=["weeks", "annualization_factor"])
+    return merged, log_df
+
+
+def build_historical_panel_source() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Builds the historical company-year panel fresh, covering all 4 mission
+    groups (ACE, Beyond Earth, Resilient Earth, Cross-Cutting) — not the
+    labelled_features.csv companies-in-training-eligible-missions-only
+    population. Reuses sample_construction's split_labelled_inference/
+    build_long_panel (both already mission-agnostic, just never called on
+    anything but REAL_MISSIONS before this) and feature_engineering's
+    STATIC_COLS/_melt_year_indexed for company_age/value_stream/sic_code_1/
+    company_size — the same static-column join add_features does for the ML
+    panel, without any of the grants/accelerator/Source3 features, which
+    Cross-cutting's company-level growth models (persistence, CAGR) don't
+    need and which haven't been verified to cover the Cross-cutting
+    population anyway.
+
+    Returns (panel, annualization_log) — turnover is corrected for
+    non-standard accounting periods (annualize_turnover) before this frame
+    is written out, since every downstream forecast_src growth calculation
+    (log_growth_1y, CAGR, gazelle streaks) reads its turnover straight from
+    this panel. Fixing it here, once, at the earliest point turnover enters
+    the forecasting pipeline, means no individual growth formula needs its
+    own correction."""
+    prepped, _ = prepare_source2()
+    mapping = load_mapping()
+    segmented, _ = segment_missions(prepped, mapping)
+    # Same true-duplicate exclusion every other module in this pipeline
+    # applies (0 rows affected currently, kept for consistency — see
+    # data_prep.py's resolve_duplicate_ch_numbers).
+    segmented = segmented[~segmented["is_true_duplicate"]]
+
+    groups = REAL_MISSIONS + [CROSS_CUTTING_MISSION_VALUE]
+    panels = []
+    for group in groups:
+        group_df = segmented[segmented[MISSION_COL] == group]
+        labelled, _inference = split_labelled_inference(group_df)
+        # build_long_panel's own turnover check (sample_construction.
+        # check_turnover) already nulls-and-drops any bad row before this
+        # module ever sees it — its log is discarded here (not silently
+        # skipped: this module's own validate_historical_panel -> check_turnover
+        # runs the identical check again downstream and would catch anything
+        # that somehow slipped through, so nothing goes unlogged overall).
+        panel, _turnover_quality_log = build_long_panel(labelled)
+        panels.append(panel)
+    full_panel = pd.concat(panels, ignore_index=True)
+
+    static = segmented[[COMPANY_ID_COL] + list(STATIC_COLS)].rename(columns=STATIC_COLS)
+    full_panel = full_panel.merge(static, on=COMPANY_ID_COL, how="left")
+
+    size_long = _melt_year_indexed(segmented, "Size {year}", "company_size")
+    full_panel = full_panel.merge(size_long, on=[COMPANY_ID_COL, "year"], how="left")
+
+    full_panel["company_age_years"] = full_panel["year"] - full_panel["founded_year"]
+    full_panel.loc[full_panel["company_age_years"] < 0, "company_age_years"] = np.nan
+
+    factors = build_source1_annualization_factors(segmented)
+    full_panel, annualization_log = annualize_turnover(full_panel, "total_turnover", "year", factors)
+
+    return full_panel, annualization_log
+
+
+def find_missing_fields(df: pd.DataFrame, required_fields: list[str], dataset_name: str) -> pd.DataFrame:
+    missing = [f for f in required_fields if f not in df.columns]
+    return pd.DataFrame({"dataset": dataset_name, "missing_field": missing})
+
+
+def check_company_id(df: pd.DataFrame, id_col: str = "company_id") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Sec 3.1: rows without a stable, non-blank company_id are excluded from
+    the returned clean frame and retained only in the exception log."""
+    is_invalid = df[id_col].isna() | (df[id_col].astype(str).str.strip() == "")
+    exceptions = df[is_invalid].copy()
+    exceptions["exclusion_reason"] = "missing_or_blank_company_id"
+    return df[~is_invalid].copy(), exceptions
+
+
+def check_duplicates(df: pd.DataFrame, subset: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Sec 3.2. The spec's resolution order is (1) most reliable source, (2)
+    most recently updated record, (3) manual review — neither a source-
+    reliability ranking nor a last-updated timestamp exists anywhere in the
+    current pipeline's output, so every duplicate group falls straight
+    through to (3): flagged in full (all rows in the group, not just the
+    dropped ones) and the first occurrence is kept so downstream stages
+    still get exactly one row per key. Untested against real duplicates as
+    of this run (none exist in either input) — exercised only once real
+    duplicate company-year rows appear."""
+    dup_mask = df.duplicated(subset=subset, keep=False)
+    duplicates = df[dup_mask].copy()
+    if duplicates.empty:
+        return df, duplicates
+    duplicates["exclusion_reason"] = "duplicate_key_flagged_for_manual_review_no_reliability_or_timestamp_signal"
+    deduped = df.drop_duplicates(subset=subset, keep="first")
+    return deduped, duplicates
+
+
+def check_turnover(df: pd.DataFrame, col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Sec 3.3: non-numeric/negative/non-finite turnover is converted to
+    missing and logged — the row itself is kept (unlike 3.1/3.2/3.4/3.5,
+    this check never drops a row)."""
+    numeric = pd.to_numeric(df[col], errors="coerce")
+    was_non_numeric = df[col].notna() & numeric.isna()
+    is_negative = numeric.notna() & (numeric < 0)
+    is_non_finite = numeric.notna() & ~np.isfinite(numeric)
+
+    reasons = pd.Series("", index=df.index, dtype="object")
+    reasons[was_non_numeric] = "non_numeric"
+    reasons[is_negative] = "negative"
+    reasons[is_non_finite] = "non_finite"
+    invalid_mask = reasons != ""
+
+    cleaned = df.copy()
+    cleaned[col] = numeric
+    cleaned.loc[invalid_mask, col] = np.nan
+
+    log = df[invalid_mask].copy()
+    log["exclusion_reason"] = "turnover_" + reasons[invalid_mask]
+    return cleaned, log
+
+
+def check_years(df: pd.DataFrame, col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Sec 3.4: accounting_year/baseline_year must be a four-digit integer
+    within the pipeline's supported historical range; rows outside it are
+    removed (the spec's "removed or reviewed" — removed here, logged either
+    way)."""
+    numeric = pd.to_numeric(df[col], errors="coerce")
+    is_integer_valued = numeric.notna() & (numeric == numeric.round())
+    is_four_digit = is_integer_valued & (numeric >= 1000) & (numeric <= 9999)
+    in_range = numeric.between(*SUPPORTED_YEAR_RANGE)
+    valid_mask = is_four_digit & in_range
+
+    log = df[~valid_mask].copy()
+    log["exclusion_reason"] = np.where(
+        ~is_four_digit[~valid_mask], "year_not_four_digit_integer", "year_outside_supported_range"
+    )
+    return df[valid_mask].copy(), log
+
+
+PLAUSIBLE_EMPLOYEES_MAX = 500_000
+# Not a sec 3 check (methodology doesn't cover employees) — found while
+# building forecast_feature_engineering.py: employee_growth's log-difference
+# construction (log1p(employees_t) - log1p(employees_lag1)) is unbounded
+# below when a single garbage upstream value inflates employees_lag1 —
+# unlike the simple-ratio version it replaced, which was floored at -1.0
+# regardless of how bad the prior value was. The bound is set well above
+# BAE Systems' ~97,000 (the largest genuinely FILED employee count anywhere
+# in this dataset) — the only 3 rows it catches (GMV 2013: 39,187,246;
+# Added Value Solutions 2016/2017: 630,431 twice) are all
+# employee_count_source="estimated", never "filed", consistent with this
+# being a Beauhurst estimation-algorithm failure, not a real company.
+
+
+def check_plausible_employees(df: pd.DataFrame, col: str = "employees") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Nulls (never drops the row) an employees value that exceeds
+    PLAUSIBLE_EMPLOYEES_MAX — same null-and-log shape as check_turnover,
+    for a value that's implausible rather than structurally invalid."""
+    if col not in df.columns:
+        return df, df.iloc[0:0].copy()
+    is_implausible = df[col].notna() & (df[col] > PLAUSIBLE_EMPLOYEES_MAX)
+    cleaned = df.copy()
+    cleaned.loc[is_implausible, col] = np.nan
+    log = df[is_implausible].copy()
+    log["exclusion_reason"] = "employees_exceeds_plausible_max"
+    return cleaned, log
+
+
+def check_mission(df: pd.DataFrame, col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Sec 3.5: mission must resolve (case-insensitively) to one of the 4
+    valid values. Rows that don't (including a genuinely null mission, e.g.
+    the upstream "Sky UK" data-entry error already excluded from mission
+    mapping in mission_segmentation.py) are excluded and logged — never
+    guessed. Cross-Cutting is a VALID value here (only flagged separately as
+    primary_model_eligible=False downstream), consistent with the spec's
+    "retained in the final output but excluded from primary model fitting"."""
+    raw = df[col]
+    canonical_lookup = {m.lower(): m for m in VALID_MISSIONS}
+    mapped = raw.astype("string").str.strip().str.lower().map(canonical_lookup)
+    valid_mask = mapped.notna()
+
+    cleaned = df[valid_mask].copy()
+    cleaned[col] = mapped[valid_mask].to_numpy()
+    cleaned["primary_model_eligible"] = cleaned[col].isin(PRIMARY_FIT_MISSIONS)
+
+    log = df[~valid_mask].copy()
+    log["exclusion_reason"] = np.where(raw[~valid_mask].isna(), "missing_mission", "unrecognized_mission_value")
+    return cleaned, log
+
+
+def normalize_turnover_source(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Baseline-only. Maps the pipeline's 4-value turnover_source down to the
+    spec's observed/estimated, leaving it null (not fabricated) for rows with
+    no baseline_turnover value at all. Doesn't drop rows — this isn't a
+    sec 3 hard check, just the observed/estimated framing sec 2.1 requires."""
+    df = df.copy()
+    has_value = df["baseline_turnover"].notna()
+    mapped = df["turnover_source"].map(TURNOVER_SOURCE_MAP)
+
+    df["turnover_source_raw"] = df["turnover_source"]
+    df["turnover_source"] = mapped.where(has_value, pd.NA)
+
+    unresolved = has_value & mapped.isna()
+    log = df[unresolved].copy()
+    log["exclusion_reason"] = "turnover_source_value_not_in_observed_estimated_map"
+    return df, log
+
+
+def validate_completed_baseline(path: Path = COMPLETED_BASELINE_PATH) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    raw = pd.read_csv(path)
+    df = raw.rename(columns=BASELINE_COLUMN_MAP)
+    field_gaps = find_missing_fields(df, REQUIRED_BASELINE_FIELDS, "completed_baseline")
+
+    logs = []
+    df, log = check_company_id(df)
+    logs.append(log.assign(check="company_id"))
+    df, log = check_duplicates(df, subset=["company_id"])
+    logs.append(log.assign(check="duplicate_company_id"))
+    df, log = check_turnover(df, "baseline_turnover")
+    logs.append(log.assign(check="baseline_turnover"))
+    df, log = check_years(df, "baseline_year")
+    logs.append(log.assign(check="baseline_year"))
+    df, log = check_mission(df, "mission")
+    logs.append(log.assign(check="mission"))
+    df, log = normalize_turnover_source(df)
+    logs.append(log.assign(check="turnover_source"))
+
+    quality_log = pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
+    return df, quality_log, field_gaps
+
+
+def validate_historical_panel(path: Path = HISTORICAL_PANEL_PATH) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    raw = pd.read_csv(path)
+    df = raw.rename(columns=PANEL_COLUMN_MAP)
+    field_gaps = find_missing_fields(df, REQUIRED_PANEL_FIELDS, "historical_panel")
+
+    logs = []
+    df, log = check_company_id(df)
+    logs.append(log.assign(check="company_id"))
+    df, log = check_duplicates(df, subset=["company_id", "accounting_year"])
+    logs.append(log.assign(check="duplicate_company_year"))
+    df, log = check_turnover(df, "turnover")
+    logs.append(log.assign(check="turnover"))
+    df, log = check_plausible_employees(df)
+    logs.append(log.assign(check="employees"))
+    df, log = check_years(df, "accounting_year")
+    logs.append(log.assign(check="accounting_year"))
+    df, log = check_mission(df, "mission")
+    logs.append(log.assign(check="mission"))
+
+    quality_log = pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
+    return df, quality_log, field_gaps
+
+
+def find_invalid_turnover_flags(baseline_log: pd.DataFrame, panel_log: pd.DataFrame) -> pd.DataFrame:
+    """Pulls the company_ids check_turnover already flagged (negative/non-
+    finite/non-numeric) out of each validate_* quality log — reuses that
+    check's row-level detection rather than re-parsing turnover values a
+    second time. The log rows are captured from the PRE-nulling frame (see
+    check_turnover), so `offending_value` here is the actual invalid number,
+    not the NaN it gets replaced with."""
+    frames = []
+    if len(baseline_log) and "baseline_turnover" in baseline_log.columns:
+        hits = baseline_log[baseline_log["check"] == "baseline_turnover"].copy()
+        if len(hits):
+            hits["source"] = "completed_baseline"
+            hits["offending_year"] = hits["baseline_year"]
+            hits["offending_value"] = hits["baseline_turnover"]
+            frames.append(hits[["company_id", "source", "offending_year", "offending_value", "exclusion_reason"]])
+    if len(panel_log) and "turnover" in panel_log.columns:
+        hits = panel_log[panel_log["check"] == "turnover"].copy()
+        if len(hits):
+            hits["source"] = "historical_panel"
+            hits["offending_year"] = hits["accounting_year"]
+            hits["offending_value"] = hits["turnover"]
+            frames.append(hits[["company_id", "source", "offending_year", "offending_value", "exclusion_reason"]])
+    if not frames:
+        return pd.DataFrame(columns=["company_id", "source", "offending_year", "offending_value", "exclusion_reason"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def exclude_companies_with_invalid_turnover(
+    baseline: pd.DataFrame, panel: pd.DataFrame, baseline_log: pd.DataFrame, panel_log: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Project policy (distinct from sec 3.3's per-row null-and-log, and from
+    mission_segmentation.py's KNOWN_MISCATEGORIZED_COMPANIES — this is a
+    general rule, not a specific-company exception): a company with an
+    invalid turnover value ANYWHERE in its history — any panel year, or its
+    single baseline snapshot — is dropped from the forecasting pipeline
+    ENTIRELY, not corrected or nulled-and-carried-forward. A company with 10
+    clean years and 1 negative one is still fully excluded; sec 3.3's
+    row-level null-and-log already ran first (baseline/panel here are
+    already the "clean" frames from validate_completed_baseline/
+    validate_historical_panel), this removes every remaining row for that
+    company_id from BOTH inputs, since the two are cross-referenced (a
+    company flagged only in one input is still excluded from both)."""
+    flags = find_invalid_turnover_flags(baseline_log, panel_log)
+    invalid_company_ids = set(flags["company_id"].unique())
+    baseline_clean = baseline[~baseline["company_id"].isin(invalid_company_ids)].copy()
+    panel_clean = panel[~panel["company_id"].isin(invalid_company_ids)].copy()
+    return baseline_clean, panel_clean, flags
+
+
+def main() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    print("=== Completed baseline ===")
+    baseline_raw = pd.read_csv(COMPLETED_BASELINE_PATH)
+    baseline, baseline_log, baseline_gaps = validate_completed_baseline()
+    print(f"Input: {COMPLETED_BASELINE_PATH.relative_to(REPO_ROOT)} ({len(baseline_raw)} rows)")
+    print(f"Clean rows: {len(baseline)} ({len(baseline_raw) - len(baseline)} excluded)")
+    if len(baseline_log):
+        print(baseline_log.groupby(["check", "exclusion_reason"]).size().to_string())
+    if len(baseline_gaps):
+        print(f"Missing required fields (not fabricated): {baseline_gaps['missing_field'].tolist()}")
+    print(f"turnover_source (post-normalization): {baseline['turnover_source'].value_counts(dropna=False).to_dict()}")
+    print(f"mission distribution: {baseline['mission'].value_counts(dropna=False).to_dict()}")
+
+    print("\n=== Filing-period annualization (non-standard accounting periods) ===")
+    prepped, _ = prepare_source2()
+    mapping = load_mapping()
+    segmented, _ = segment_missions(prepped, mapping)
+    annualization_factors = build_source1_annualization_factors(segmented)
+    # Only baseline_turnover rows anchored to a real filing ("observed") are
+    # eligible — a "predicted" baseline is the estimation model's own
+    # output, not tied to any actual accounting period, so there's nothing
+    # to annualize. turnover_source_raw is normalize_turnover_source's
+    # pre-remap value (stable for "observed" either way).
+    observed_mask = baseline["turnover_source_raw"] == "observed"
+    baseline, baseline_annualization_log = annualize_turnover(
+        baseline, "baseline_turnover", "baseline_year", annualization_factors, eligible_mask=observed_mask
+    )
+    print(f"Baseline rows corrected for a non-52-week filing period: {len(baseline_annualization_log)}")
+
+    print("\n=== Historical company-year panel ===")
+    panel_source, panel_annualization_log = build_historical_panel_source()
+    panel_source.to_csv(HISTORICAL_PANEL_SOURCE_PATH, index=False)
+    print(f"Built {HISTORICAL_PANEL_SOURCE_PATH.relative_to(REPO_ROOT)} ({len(panel_source)} rows, 4 mission groups incl. Cross-Cutting)")
+    print(f"Historical panel rows corrected for a non-52-week filing period: {len(panel_annualization_log)}")
+
+    panel_raw = pd.read_csv(HISTORICAL_PANEL_PATH)
+    panel, panel_log, panel_gaps = validate_historical_panel()
+    print(f"Input: {HISTORICAL_PANEL_PATH.relative_to(REPO_ROOT)} ({len(panel_raw)} rows)")
+    print(f"Clean rows: {len(panel)} ({len(panel_raw) - len(panel)} excluded)")
+    if len(panel_log):
+        print(panel_log.groupby(["check", "exclusion_reason"]).size().to_string())
+    if len(panel_gaps):
+        print(f"Missing required fields (not fabricated): {panel_gaps['missing_field'].tolist()}")
+    print(f"mission distribution: {panel['mission'].value_counts(dropna=False).to_dict()}")
+
+    print("\n=== Invalid-turnover-history exclusion (policy, not sec 3.3) ===")
+    baseline_n, panel_n = len(baseline), len(panel)
+    baseline, panel, invalid_turnover_log = exclude_companies_with_invalid_turnover(
+        baseline, panel, baseline_log, panel_log
+    )
+    n_companies_excluded = invalid_turnover_log["company_id"].nunique()
+    if n_companies_excluded:
+        print(f"Companies excluded entirely: {n_companies_excluded}")
+        print(invalid_turnover_log.to_string(index=False))
+        print(f"Baseline rows: {baseline_n} -> {len(baseline)} ({baseline_n - len(baseline)} removed)")
+        print(f"Panel rows: {panel_n} -> {len(panel)} ({panel_n - len(panel)} removed)")
+    else:
+        print("No companies with invalid turnover anywhere in their history.")
+
+    baseline.to_csv(DATA_DIR / "forecast_baseline_validated.csv", index=False)
+    baseline_log.to_csv(DATA_DIR / "forecast_baseline_quality_log.csv", index=False)
+    panel.to_csv(DATA_DIR / "forecast_panel_validated.csv", index=False)
+    panel_log.to_csv(DATA_DIR / "forecast_panel_quality_log.csv", index=False)
+    invalid_turnover_log.to_csv(DATA_DIR / "forecast_invalid_turnover_exclusions.csv", index=False)
+    pd.concat([baseline_gaps, panel_gaps], ignore_index=True).to_csv(DATA_DIR / "forecast_field_gaps.csv", index=False)
+    baseline_annualization_log.to_csv(DATA_DIR / "forecast_baseline_annualization_log.csv", index=False)
+    panel_annualization_log.to_csv(DATA_DIR / "forecast_panel_annualization_log.csv", index=False)
+
+    print(f"\nWrote {DATA_DIR / 'forecast_baseline_validated.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_baseline_quality_log.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_panel_validated.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_panel_quality_log.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_invalid_turnover_exclusions.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_field_gaps.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_baseline_annualization_log.csv'}")
+    print(f"Wrote {DATA_DIR / 'forecast_panel_annualization_log.csv'}")
+
+
+if __name__ == "__main__":
+    main()
