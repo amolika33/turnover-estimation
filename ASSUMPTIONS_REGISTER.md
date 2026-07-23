@@ -427,21 +427,59 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
     enough volume to trust them. ✅ `PROJECT_NOTES.md` "Extended validation
     round" section 3.
 63. **Sub-segmentation investigation (Resilient Earth + Cross-cutting) —
-    IN PROGRESS, not yet resolved.** Investigation-phase only per explicit
-    instruction (report sample sizes and proposed groupings, confirm
-    before running any sub-group bake-off). Resilient Earth value_stream
-    counts gathered (Geospatial Intelligence 37, Agriculture 21, Climate &
-    Sustainability 12, Earth Observation 9, Health & Wellbeing 5,
-    Extractive Industries 1 — only the first two clear a ~15-20-company
-    viability bar). Cross-cutting's SIC-code distribution checked and
-    found genuinely fragmented (28 distinct 2-digit SIC codes across 107
-    companies, largest single code only 13) even within its only
-    available categorical split (raw Value Stream "Consultancy / Other"
-    86 vs "Explore New Markets" 21) — no clean natural cluster found so
-    far. Full grouping proposal and any bake-off results pending user
-    confirmation. **Item 6 (final locked model decisions) is deliberately
-    not written until this item and the temporal backtest above are both
-    complete** — the temporal backtest is done; this one isn't.
+    RESOLVED.** Resilient Earth: tested (Geospatial Intelligence 37
+    companies, Agriculture 21 — the only 2 clearing a ~15-20-company
+    viability bar), **rejected as a whole**: weighted average across the
+    proposed structure (0.508) came in below the current blended CatBoost
+    model (0.65) — Agriculture's own sub-model is unstable (6 of 9 models
+    went R2-negative) and the residual 27 companies' blended-model
+    performance doesn't change. Geospatial Intelligence's own isolated
+    gain (0.06-0.28 -> 0.783) is real but not enough alone; flagged for a
+    future revisit, not adopted. ✅ `PROJECT_NOTES.md` "Extended validation
+    round" section 5.
+64. **Cross-cutting split — ADOPTED, implemented in production code (not
+    just an analysis finding)**: Consultancy/Other (86 companies) gets its
+    own dedicated Elastic Net model, confirmed 5-repeat R2=0.778
+    (std=0.095, held up almost exactly from its single-pass 0.788).
+    Explore New Markets (21 companies) does NOT get its own model — its
+    single-pass 0.580 collapsed to a confirmed 0.293 (std=0.625) under
+    the 5-repeat check, the same small-sample-instability pattern as
+    Resilient Earth's Agriculture — it falls back to the whole-population
+    blended model instead. Implementing this properly (per explicit
+    instruction) surfaced a real finding: running Cross-cutting through
+    the project's actual composite-rank/robustness-filtered selection
+    algorithm for the first time picks **Elastic Net (R2=0.45)** as the
+    blended fallback, not the "Extra Trees, R2=0.59" figure used
+    throughout this investigation — Extra Trees has a genuine robustness
+    violation (one fold's MAE is 2.4x the model's own median fold MAE).
+    Implementing the routing also surfaced and fixed a real double-
+    counting bug in `assemble.py` (every Cross-cutting company was being
+    counted twice in `final_completed_dataset.csv` — verified: 394
+    duplicate rows before the fix, zero after). Retired
+    `src/cross_cutting_prediction.py` (marked superseded in its own
+    docstring, not deleted). ✅ `PROJECT_NOTES.md` "Extended validation
+    round" sections 5-6; `src/model_selection.py`'s
+    `select_cross_cutting_models()`; `src/predict.py`'s
+    `predict_cross_cutting()`.
+65. **Final locked model decisions across all 4 missions — RESOLVED,
+    only after items 61 (temporal backtest) and 63/64 (sub-segmentation)
+    both completed, per explicit instruction not to write this until
+    then.** ACE and Beyond Earth's deployed models are UNCHANGED this
+    round (Lasso, 0.14 and 0.63) — their adjacent-augmented candidates
+    (Extra Trees, confirmed 0.72/0.69) were validated as real findings but
+    never instructed to be promoted to deployment. Resilient Earth's
+    deployed CatBoost model (0.65) is unchanged — both adjacent
+    augmentation and sub-segmentation were tested and rejected for it.
+    Cross-cutting gets a genuinely NEW deployment (it never had one
+    before): the split described in #64. Explicitly flagged: the temporal
+    backtest (item 61) ran against each mission's best-known CANDIDATE at
+    the time, not necessarily the final deployed model after this
+    section's decisions — most notably Cross-cutting's temporal backtest
+    used the pre-split standalone model, not the adopted split. Re-running
+    it against the actual final Cross-cutting split (and against ACE/
+    Beyond Earth's adjacent-augmented candidates, if either is ever
+    promoted) is a legitimate open follow-up, not something this round
+    covered. ✅ `PROJECT_NOTES.md` "Extended validation round" section 6.
 
 ## Summary
 
