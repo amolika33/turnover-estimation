@@ -1379,3 +1379,62 @@ not alarming fold-to-fold variance. **The deployed model has NOT been
 switched** — this is a finding pending a confirmatory run at full
 5-repeat rigor for the specific mission/model combinations that matter
 (Extra Trees, ACE and Beyond Earth), not yet a production decision.
+
+## Beyond Earth worst-predicted diagnostic follow-ups
+
+Same worst-predicted-company diagnostic used for Resilient Earth
+(above), run against ACE and Beyond Earth's confirmatory-pass winning
+model (Extra Trees) at the same space-only single-pass CV. Two follow-up
+fixes came directly out of it:
+
+**`is_international_research_body`** — SKAO (Square Kilometre Array
+Observatory) showed the same signature as the UK public-sector bodies
+(turnover collapsing to £3,710-£11,175 despite retained assets of
+£7.5-8.8M) but for a different reason: a big-science intergovernmental
+organization funded via international treaty contributions, not UK
+government funding. Added as its own flag, distinct from
+`is_public_sector_body`, in `feature_engineering.py` — see that file's
+`INTERNATIONAL_RESEARCH_BODY_EXACT_NAMES` for the full reasoning
+(checked all 367 space companies and all 3 adjacent files first; SKAO is
+currently the only confirmed match anywhere, built anyway since the
+evidence for that one case is solid).
+
+**Open Cosmos data correction** (`data_prep.py`'s `KNOWN_CORRECTIONS`,
+same mechanism as the GeoData Institute/ISVR Consulting fixes — see
+DATA_SCHEMA.md): the diagnostic's worst-£-residual list flagged Open
+Cosmos's 2023 turnover as an implausible £6.5 **billion** on just 45
+employees and £40M assets. Investigated before touching anything:
+
+- **Root cause**: the raw value (`£6,542,660,000`) exists in Source 2
+  itself, unmodified by this project's code. Source 1 has no matching
+  Financial Statement entry for this company/year at all (blank) — so the
+  error predates and is independent of any parsing, merge, or
+  annualization step here. The real filed turnover for year ended 31
+  December 2023, confirmed directly against the filed accounts, is
+  `£6,542,660` — exactly 1000x smaller, consistent with a unit-scale slip
+  in the source file.
+- **Checked for a systemic pattern before concluding it was isolated**:
+  (1) revenue-per-employee outliers across the full 3,011-row labelled
+  panel — Open Cosmos's 2023 row was £145M/employee, 7x more extreme than
+  the next-worst case (Intelsat, ~£20M/employee, which has a plausible
+  business-model explanation as a low-headcount satellite-capacity
+  operator); (2) year-over-year turnover swings >50x or <1/50x — only 5
+  rows dataset-wide, and the other 4 (Cobham's 2020 private-equity
+  restructuring, SKAO's already-documented funding-model shift, and 2
+  small-company growth surges) all have plausible non-error explanations.
+  Confirmed isolated to this one company-year, not systemic.
+- **Corrected** in `data_prep.py`'s `KNOWN_CORRECTIONS` (not the raw
+  file), same sourced/documented/not-silent pattern as GeoData
+  Institute/ISVR Consulting: `Total Turnover (CH 2023)` changed from
+  `6542660000.0` to `6542660.0`, logged with the full reasoning above.
+  Verified end-to-end: 2023 now reads £6.5M/45 employees/£40M assets,
+  consistent with 2024's £29.7M/107 employees/£80M assets.
+
+**A separate lead from the same diagnostic was investigated and
+retracted**: an apparent "Intel company-identity collision" (contradictory
+turnover/employee scale under one company_id) turned out to be an
+artifact of a loose substring search in the investigation itself
+(`"Intel"` also matching "Intelsat," a genuinely different company) — not
+a real pipeline issue. `company_id="ch_01134945_intel"` is a single,
+internally consistent 11-row record. No fix needed; noted here so the
+retraction is as visible as the original claim was.

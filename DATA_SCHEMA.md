@@ -187,6 +187,17 @@ the same companies (some will be missing from one side or the other).
     charity number). Nulled; falls back to URL/name matching.
   - **ISVR Consulting**'s correct CH number is `14701170` — was also
     incorrectly carrying `RC000668`.
+- A separate, unrelated data-entry error (not a shared-CH-number case) was
+  found and corrected the same way (`KNOWN_CORRECTIONS`): **Open Cosmos**'s
+  `Total Turnover (CH 2023)` was `£6,542,660,000` in the raw file — exactly
+  1000x the real filed turnover for year ended 31 December 2023
+  (`£6,542,660`, confirmed directly against the filed accounts). Traced and
+  confirmed isolated, not systemic, before correcting — see PROJECT_NOTES.md
+  "Beyond Earth worst-predicted diagnostic follow-ups" for the full
+  investigation (Source 1 had no matching entry for this company/year at
+  all, so the error predates this project's pipeline; two independent
+  outlier scans across the full labelled panel found nothing else this
+  extreme).
   - **General rule for the remaining 4 groups** (9 rows, e.g. CH `08750033`
     = "Seradata Ltd" vs. "Slingshot Aerospace"; CH `RC000817` = "RAL Space"
     vs. "Science and Technology Facilities Council" vs. "Centre for

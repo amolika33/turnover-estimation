@@ -43,6 +43,31 @@ KNOWN_CORRECTIONS = [
             "Southampton's charity number)."
         ),
     },
+    {
+        "name": "Open Cosmos",
+        "field": "Total Turnover (CH 2023)",
+        "new_value": 6542660.0,
+        "reason": (
+            "Source 2's raw value (£6,542,660,000) is exactly 1000x the "
+            "real filed turnover for year ended 31 December 2023 "
+            "(£6,542,660, confirmed directly against the filed accounts) — "
+            "a unit-scale error in the source file itself, not introduced "
+            "by this project's pipeline. Verified before correcting: "
+            "Source 1 has no matching Financial Statement entry for this "
+            "company/year at all (blank), so the error predates and is "
+            "independent of any parsing, merge, or annualization step "
+            "here. Checked whether the same error recurs elsewhere via "
+            "two independent scans of the full 3,011-row labelled panel — "
+            "revenue-per-employee outliers (this row was 7x more extreme "
+            "than the next-worst case, which had a plausible non-error "
+            "explanation) and year-over-year turnover swings >50x/<1/50x "
+            "(the other 4 flagged rows all had plausible non-error "
+            "explanations: a private-equity restructuring, an "
+            "already-documented public-research-funding-model shift, and "
+            "2 small-company growth surges) — confirmed isolated to this "
+            "one company-year, not a systemic scaling bug."
+        ),
+    },
 ]
 
 LEGAL_SUFFIXES = re.compile(

@@ -359,12 +359,36 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
 56. **Single 5-fold pass, not the standard 5-repeat (25-fold) config**: a
     disclosed compute tradeoff for the adjacent-integrated bake-off only
     — the original space-only bake-offs (#1-45 above) remain at full
-    5-repeat rigor, unaffected. A confirmatory 5-repeat pass (Extra Trees
-    only, ACE + Beyond Earth only) is the natural next check before any
-    production model-switch decision. ⚠️ Not yet resolved — flagged here
-    pending that confirmatory run, see `PROJECT_NOTES.md` "Adjacent-company
-    integration: bake-off results" for the single-pass R2/R2_std this
-    caveat applies to.
+    5-repeat rigor, unaffected. **RESOLVED**: the confirmatory 5-repeat
+    pass (Extra Trees, ACE + Beyond Earth) completed — ACE 0.72 mean
+    (std 0.46), Beyond Earth 0.69 mean (std 0.35), both confirming the
+    single-pass finding held up under full rigor, though ACE's mean came
+    down from the single-pass 0.83. ✅ `PROJECT_NOTES.md` "Adjacent-company
+    integration: bake-off results".
+
+## Worst-predicted diagnostics and data-quality fixes (this session)
+
+57. **`is_international_research_body` flag**: SKAO (Square Kilometre
+    Array Observatory) showed the same near-zero-turnover-despite-assets
+    signature as the UK public-sector bodies, but for a treaty-funded
+    intergovernmental science body, not UK government funding — kept as
+    a separate flag. Checked all 367 space companies + all 3 adjacent
+    files first; SKAO is currently the only confirmed match anywhere,
+    built anyway given solid evidence for that one case. ✅
+    `PROJECT_NOTES.md` "Beyond Earth worst-predicted diagnostic
+    follow-ups".
+58. **Open Cosmos 2023 turnover correction**: Source 2's raw value
+    (£6,542,660,000) was exactly 1000x the real filed turnover
+    (£6,542,660, confirmed against the filed accounts) — a unit-scale
+    error in the source file itself, predating this project's pipeline
+    (Source 1 has no matching entry for this company/year at all).
+    Checked for a systemic pattern via two independent scans of the full
+    labelled panel (revenue-per-employee outliers, year-over-year
+    swings) before concluding it was isolated. Corrected in
+    `data_prep.py`'s `KNOWN_CORRECTIONS`, same sourced/documented
+    mechanism as the GeoData Institute/ISVR Consulting fixes. ✅
+    `PROJECT_NOTES.md` "Beyond Earth worst-predicted diagnostic
+    follow-ups"; `DATA_SCHEMA.md`.
 
 ## Summary
 
