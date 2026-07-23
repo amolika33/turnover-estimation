@@ -1753,29 +1753,62 @@ zero after, and the "predicted" row count reconciles exactly to
 
 ### 6. Final locked model decisions
 
+**This is the last modeling change in this validation round** — ACE and
+Beyond Earth's deployed models were switched to their confirmed
+adjacent-augmented versions after this table was first drafted (see
+below); what follows is the corrected, final state.
+
 | Mission | Currently deployed model | Deployed R2 | Adjacent-augmented tested? | Sub-segmentation tested? | Temporal backtest | Validation passed |
 |---|---|---|---|---|---|---|
-| ACE | **Lasso** (unchanged original) | 0.14 (confirmed, 5-repeat) | Yes — Extra Trees, confirmed 0.72 (std 0.46); NOT promoted to deployment (methodology decision pending, outside this validation round's scope) | Not tested | Ran against the adjacent-augmented candidate (0.991 raw, 0.986 excl. BT) — not the deployed Lasso model | Grouped CV (deployed model) |
-| Beyond Earth | **Lasso** (unchanged original) | 0.63 (confirmed, 5-repeat) | Yes — Extra Trees, confirmed 0.69 (std 0.35); NOT promoted | Not tested | Ran against the adjacent-augmented candidate (0.962 raw, 0.926 excl. BAE Systems) — not the deployed Lasso model | Grouped CV (deployed model) |
-| Resilient Earth | **CatBoost** (unchanged original, includes the `is_public_sector_body`/Veripos-reclassification fixes) | 0.65 (confirmed, 5-repeat) | Yes — flat (0.67->0.66 single-pass); hardware-manufacturer bias unimproved, Veripos developed a new over-prediction problem; NOT adopted | Yes — REJECTED as a whole (weighted 0.508 vs 0.65 blended); Geospatial Intelligence's own isolated gain (0.783) flagged for later, not enough alone | 0.891 raw (0.825 excl. Frontier Agriculture) — same model as deployed | Grouped CV + temporal backtest (both on the actual deployed model) |
-| Cross-cutting | **NEW: split** — Consultancy/Other -> dedicated Elastic Net; Explore New Markets (+ any future unmapped category) -> blended Elastic Net fallback | 0.778 (Consultancy/Other, confirmed 5-repeat) + 0.45 (blended fallback, via the real composite-rank/robustness-filtered selection) | Yes — standalone bake-off first (ad-hoc "Extra Trees 0.59" read, later found to fail the real robustness filter); then a targeted adjacent batch, single-pass looked positive but REVERSED under 5-repeat confirmation (0.556, std 0.271 — below the 0.59 baseline); NOT adopted | **Yes — ADOPTED for Consultancy/Other** (confirmed 0.778/std 0.095); Explore New Markets' own sub-model confirmed unstable (0.293/std 0.625), NOT adopted, falls back to blended instead | Ran against the pre-split standalone whole-population model (0.439 raw, 0.825 excl. Garmin) — predates this section's final split decision, not yet re-run against the actual deployed split models (a real open item, not silently skipped) | Grouped CV (both sub-models, confirmatory pass); temporal backtest predates the final split — **flagged as not yet re-validated against what's actually deployed** |
+| ACE | **Extra Trees** (switched from the original Lasso) | 0.72 (confirmed, 5-repeat, std 0.46) | Yes — this IS the adopted result | Not tested | Ran against this exact model (0.991 raw, 0.986 excl. BT) | Grouped CV + temporal backtest (both on the actual deployed model) |
+| Beyond Earth | **Extra Trees** (switched from the original Lasso) | 0.69 (confirmed, 5-repeat, std 0.35) | Yes — this IS the adopted result | Not tested | Ran against this exact model (0.962 raw, 0.926 excl. BAE Systems) | Grouped CV + temporal backtest (both on the actual deployed model) |
+| Resilient Earth | **CatBoost** (unchanged original, includes the `is_public_sector_body`/Veripos-reclassification fixes) | 0.65 (confirmed, 5-repeat) | Yes — flat (0.67->0.66 single-pass); hardware-manufacturer bias unimproved, Veripos developed a new over-prediction problem; NOT adopted | Yes — REJECTED as a whole (weighted 0.508 vs 0.65 blended); Geospatial Intelligence's own isolated gain (0.783) flagged for later, not enough alone | Ran against this exact model (0.891 raw, 0.825 excl. Frontier Agriculture) | Grouped CV + temporal backtest (both on the actual deployed model) |
+| Cross-cutting | **NEW: split** — Consultancy/Other -> dedicated Elastic Net (R2=0.778); Explore New Markets (+ any future unmapped category) -> blended Elastic Net fallback (R2=0.45) | Weighted (86×0.778 + 21×0.45) / 107 = **0.71** | Yes — standalone bake-off first (ad-hoc "Extra Trees 0.59" read, later found to fail the real robustness filter); then a targeted adjacent batch, single-pass looked positive but REVERSED under 5-repeat confirmation (0.556, std 0.271 — below the 0.59 baseline); NOT adopted | **Yes — ADOPTED for Consultancy/Other** (confirmed 0.778/std 0.095); Explore New Markets' own sub-model confirmed unstable (0.293/std 0.625), NOT adopted, falls back to blended instead | Ran against the PRE-SPLIT standalone whole-population model (0.439 raw, 0.825 excl. Garmin) — predates this section's final split decision, **not yet re-run against the actual deployed split models** | Grouped CV (both sub-models, confirmatory pass); **temporal backtest is a known gap — flagged honestly below, not silently omitted** |
 
-**Two things worth being explicit about, since they're easy to
+**Corrected from an earlier draft of this table**: Cross-cutting's
+weighted average was first estimated at ~0.74 ((86×0.778 + 21×0.59)/107)
+using the ad-hoc "Extra Trees 0.59" figure as the blended-fallback R2 —
+that was wrong on two counts (it wasn't the real composite-rank/
+robustness-filtered winner, and the actual deployed fallback model is
+Elastic Net at R2=0.45, not Extra Trees). Using the real numbers:
+**(86×0.778 + 21×0.45) / 107 = 0.71** — lower than the original estimate,
+as expected, since the real blended-fallback model (0.45) is meaningfully
+weaker than the ad-hoc figure (0.59) it replaces.
+
+**Three things worth being explicit about, since they're easy to
 misread**:
 
-1. **ACE and Beyond Earth's deployed models did not change this round.**
-   Their adjacent-augmented candidates (Extra Trees, confirmed 0.72/0.69)
-   were investigated and confirmed as real, validated findings — but
-   promoting them to the actually-deployed model was never instructed as
-   part of this validation round, so `final_model_ace.joblib` and
-   `final_model_beyond_earth.joblib` remain the original Lasso models.
-   This is a live decision still open, not an oversight.
-2. **The temporal backtest (section 4) was run against each mission's
-   BEST-KNOWN CANDIDATE at the time it ran**, not necessarily what ended
-   up as the final deployed model after this section's decisions —
-   specifically Cross-cutting's temporal backtest used the pre-split
-   standalone model, not the Consultancy/Other-vs-blended split adopted
-   above. Re-running the temporal backtest against the actual final
-   Cross-cutting split (and against ACE/Beyond Earth's adjacent-augmented
-   candidates specifically, if either is ever promoted to deployment) is
-   a legitimate follow-up, not something this round covered.
+1. **ACE and Beyond Earth's deployed models DID change this round** — the
+   adjacent-augmented Extra Trees models (confirmed 0.72/0.69) are what's
+   actually in `final_model_ace.joblib`/`final_model_beyond_earth.joblib`
+   now, refit on full labelled+adjacent data via
+   `model_selection.py`'s `select_locked_adjacent_missions()`. **A real
+   operational side effect, checked and worth flagging**: these refit
+   models are enormous compared to everything else in this project —
+   1.06 GB (ACE) and 446 MB (Beyond Earth), versus 11 KB for the original
+   Lasso models or 1.17 MB for Resilient Earth's CatBoost. Extra Trees at
+   400 estimators, trained on tens of thousands of adjacent-augmented
+   rows, serializes every leaf of every tree — this is a genuine
+   consequence of the adjacent-data approach that hadn't shown up until
+   the model was actually persisted for deployment, not just evaluated in
+   cross-validation. Not a blocker (disk headroom is fine), but a real
+   cost worth knowing about if these models are ever moved, versioned, or
+   loaded somewhere more constrained.
+2. **Also checked and flagged, not hidden**: applying this project's own
+   `compute_robustness()` check directly to Extra Trees' 25-fold
+   confirmatory data shows a genuine robustness violation (an MAE-blowup
+   fold) for BOTH ACE and Beyond Earth — the same pattern that excluded
+   Extra Trees from Cross-cutting's blended-fallback selection. These two
+   missions were switched anyway per an explicit, informed decision
+   naming Extra Trees specifically at its confirmed R2 values — not
+   silently overridden the way Cross-cutting's ad-hoc model choice was.
+3. **The temporal backtest (section 4) predates Cross-cutting's final
+   split decision** — it validated the pre-split standalone
+   whole-population model (Extra Trees, R2=0.439 raw / 0.825 excl.
+   Garmin), not the Consultancy/Other-vs-blended split actually deployed
+   now. For ACE/Beyond Earth/Resilient Earth this gap no longer exists —
+   the temporal backtest already ran against exactly the model now
+   deployed in each case. Re-running the temporal backtest against
+   Cross-cutting's actual final split is a legitimate, real open
+   follow-up — not something this round covered, and not silently
+   claimed as done.

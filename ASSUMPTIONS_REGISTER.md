@@ -464,22 +464,33 @@ CODE, not just the docs — documented honestly as a gap, not papered over.
 65. **Final locked model decisions across all 4 missions — RESOLVED,
     only after items 61 (temporal backtest) and 63/64 (sub-segmentation)
     both completed, per explicit instruction not to write this until
-    then.** ACE and Beyond Earth's deployed models are UNCHANGED this
-    round (Lasso, 0.14 and 0.63) — their adjacent-augmented candidates
-    (Extra Trees, confirmed 0.72/0.69) were validated as real findings but
-    never instructed to be promoted to deployment. Resilient Earth's
-    deployed CatBoost model (0.65) is unchanged — both adjacent
-    augmentation and sub-segmentation were tested and rejected for it.
-    Cross-cutting gets a genuinely NEW deployment (it never had one
-    before): the split described in #64. Explicitly flagged: the temporal
-    backtest (item 61) ran against each mission's best-known CANDIDATE at
-    the time, not necessarily the final deployed model after this
-    section's decisions — most notably Cross-cutting's temporal backtest
-    used the pre-split standalone model, not the adopted split. Re-running
-    it against the actual final Cross-cutting split (and against ACE/
-    Beyond Earth's adjacent-augmented candidates, if either is ever
-    promoted) is a legitimate open follow-up, not something this round
-    covered. ✅ `PROJECT_NOTES.md` "Extended validation round" section 6.
+    then.** ACE and Beyond Earth's deployed models WERE SWITCHED to their
+    confirmed adjacent-augmented Extra Trees versions (0.72/0.69,
+    `select_locked_adjacent_missions()` in `model_selection.py`, refit on
+    full labelled+adjacent data) — the temporal backtest already validated
+    exactly this model for both missions, so no gap remains there. Two
+    things checked and flagged, not hidden: (1) the refit Extra Trees
+    models are enormous once actually persisted — 1.06 GB (ACE) and 446 MB
+    (Beyond Earth), vs. 11 KB for the original Lasso models — a real
+    operational cost that only showed up at deployment, not in
+    cross-validation; (2) Extra Trees' own 25-fold confirmatory data shows
+    a genuine robustness violation (MAE-blowup fold) for both missions
+    under this project's own `compute_robustness()` check — same pattern
+    that excluded Extra Trees from Cross-cutting's blended-fallback pick —
+    switched anyway per an explicit, informed decision naming Extra Trees
+    specifically. Resilient Earth's deployed CatBoost model (0.65) is
+    unchanged — both adjacent augmentation and sub-segmentation were
+    tested and rejected for it. Cross-cutting gets a genuinely NEW
+    deployment (it never had one before): the split described in #64,
+    weighted average **0.71** ((86×0.778 + 21×0.45)/107) — corrected from
+    an earlier ~0.74 estimate that had mistakenly used the ad-hoc "Extra
+    Trees 0.59" figure instead of the real Elastic Net fallback (0.45).
+    Explicitly flagged as a remaining gap: the temporal backtest (item 61)
+    ran against Cross-cutting's PRE-SPLIT standalone model, not the
+    Consultancy/Other-vs-blended split actually deployed now — re-running
+    it against the real final split is a legitimate, real open follow-up,
+    not something this round covered. ✅ `PROJECT_NOTES.md` "Extended
+    validation round" section 6.
 
 ## Summary
 
